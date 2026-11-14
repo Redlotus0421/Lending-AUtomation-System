@@ -52,6 +52,8 @@ export const DOCUMENT_TYPES = [
   { value: 'business_permit', label: 'Business permit / DTI' },
   { value: 'collateral', label: 'Collateral document' },
   { value: 'cedula', label: 'Community tax certificate (cedula)' },
+  { value: 'atm_card', label: 'ATM card' },
+  { value: 'government_id', label: 'Government ID' },
   { value: 'other', label: 'Other' },
 ]
 
@@ -62,6 +64,9 @@ export const PAYMENT_METHODS = [
   { value: 'check', label: 'Check' },
   { value: 'other', label: 'Other' },
 ] as const
+
+/** Payment methods that only the system posts (shown in history, never offered in forms) */
+export const SYSTEM_PAYMENT_METHODS: Record<string, string> = { renewal: 'Renewal offset' }
 
 export const LOAN_STATUS: Record<LoanStatus, { label: string; tone: Tone }> = {
   draft: { label: 'Draft', tone: 'slate' },

@@ -1,7 +1,7 @@
 // Server-side agreement PDF rendering and permanent signature embedding.
 import { PDFDocument, rgb, StandardFonts } from 'npm:pdf-lib@1.17.1'
 import {
-  buildPlaceholderValues, disclosureRows, fillPlaceholders, orgAddress, parseTemplate, type RenderData,
+  buildPlaceholderValues, disclosureRows, fillPlaceholders, orgAddress, parseTemplate, type RenderData, withAutomaticClauses,
 } from '../template.ts'
 import { dateTimeManila, longDate, money, plainAmount, shortDate, SIGNER_LABEL } from '../format.ts'
 import { COLORS, DocWriter, embedImage } from './writer.ts'
@@ -19,7 +19,7 @@ export async function renderAgreementPdf(data: RenderData, logo?: Uint8Array | n
   const org = data.organization
   const lenderName = org.legal_name || org.name
   const values = buildPlaceholderValues(data)
-  const { text, missing } = fillPlaceholders(data.template.body, values)
+  const { text, missing } = fillPlaceholders(withAutomaticClauses(data.template.body, data), values)
   const blocks = parseTemplate(text)
   const settings = data.template.settings ?? {}
   const scheduleSize = Number(settings.schedule_font_size ?? 7.5)

@@ -7,7 +7,7 @@ import { DataTable, EmptyState, ErrorState, NativeSelect, PageHeader, Panel, Sea
 import { platformService } from '@/services/platform'
 import { fmtDate, num, peso, timeAgo } from '@/lib/format'
 import type { PlatformOrg } from '@/types/db'
-import { AccountStatusPill, CreateAccountDialog } from './dialogs'
+import { AccountStatusPill, CreateAccountDialog, LendingModePill } from './dialogs'
 
 export default function AccountsPage() {
   const navigate = useNavigate()
@@ -44,6 +44,7 @@ export default function AccountsPage() {
       ) : <span className="text-sm text-muted-foreground">No owner</span>,
     },
     { key: 'status', header: 'Status', mobile: 'meta', cell: (o) => <AccountStatusPill status={o.status} /> },
+    { key: 'mode', header: 'Lending mode', mobile: 'meta', cell: (o) => <LendingModePill mode={o.lending_mode ?? 'complete'} /> },
     { key: 'users', header: 'Users', align: 'right', mobile: false, cell: (o) => num(o.stats.users) },
     { key: 'loans', header: 'Active loans', align: 'right', mobile: 'meta', cell: (o) => <span>{num(o.stats.active_loans)}<span className="md:hidden"> active loans</span></span> },
     { key: 'outstanding', header: 'Outstanding', align: 'right', mobile: 'value', cell: (o) => peso(o.stats.outstanding, { compact: true }) },

@@ -11,7 +11,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useAuth } from '@/features/auth/AuthProvider'
 import { paymentsService, type PaymentListItem } from '@/services/payments'
 import { usersService } from '@/services/org'
-import { PAYMENT_METHODS } from '@/lib/constants'
+import { PAYMENT_METHODS, SYSTEM_PAYMENT_METHODS } from '@/lib/constants'
 import { fmtDate, peso, titleCase, toNumber } from '@/lib/format'
 import { exportCsv, exportXlsx, type ExportColumn } from '@/lib/export'
 import { DateRangeFilter, ExportMenu, makeRange, type DateRange } from '@/features/reports/shared'
@@ -154,6 +154,7 @@ export default function PaymentsPage() {
             <NativeSelect value={method} onChange={(e) => resetPage(setMethod)(e.target.value)} className="h-10 w-auto" aria-label="Method">
               <option value="all">All methods</option>
               {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+              {Object.entries(SYSTEM_PAYMENT_METHODS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </NativeSelect>
             <NativeSelect value={status} onChange={(e) => resetPage(setStatus)(e.target.value)} className="h-10 w-auto" aria-label="Status">
               <option value="all">Posted & reversed</option>

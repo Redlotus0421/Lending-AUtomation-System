@@ -30,6 +30,7 @@ import { cn } from '@/lib/utils'
 import type { LoanCalculation, LoanView } from '@/types/db'
 import { AdjustmentDialog, ApproveDialog, AssignStaffDialog, ReleaseDialog, RescheduleDialog, SettlementQuoteCard } from './LoanActions'
 import { Disclosures, rateLabel, ScheduleTable, SummaryGrid } from './LoanPreview'
+import { RenewalPanel } from './simplified/RenewalPanel'
 
 type Dlg = null | 'approve' | 'reject' | 'cancel' | 'release' | 'pay' | 'settle' | 'reschedule' | 'adjust' | 'assign' | 'default' | 'reinstate' | 'close' | 'submit'
 
@@ -64,7 +65,8 @@ export default function LoanDetailPage() {
   const s = loan.status
   const isOpen = s === 'active' || s === 'defaulted'
   const preActive = ['draft', 'pending_review', 'approved', 'awaiting_borrower_signature', 'awaiting_lender_signature', 'fully_signed', 'ready_for_release'].includes(s)
-  const editable = ['draft', 'pending_review', 'approved', 'awaiting_borrower_signature', 'awaiting_lender_signature'].includes(s)
+  // simplified loans are never edited after creation (enforced in the database too)
+  const editable = loan.lending_mode !== 'simplified' && ['draft', 'pending_review', 'approved', 'awaiting_borrower_signature', 'awaiting_lender_signature'].includes(s)
   const canApprove = can('loans.approve') && !loan.approved_at && ['pending_review', 'awaiting_borrower_signature', 'awaiting_lender_signature', 'fully_signed'].includes(s)
 
   const primary = (() => {
@@ -80,7 +82,7 @@ export default function LoanDetailPage() {
     <div>
       <PageHeader
         back={<button onClick={() => navigate(-1)} className="mb-2 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" /> Back</button>}
-        title={<span className="flex flex-wrap items-center gap-2">{loan.loan_number} <LoanStatusBadge status={s} /></span>}
+        title={<span className="flex flex-wrap items-center gap-2">{loan.loan_number} <LoanStatusBadge status={s} />{loan.lending_mode === 'simplified' && <Pill tone="teal" dot={false}>Simplified</Pill>}</span>}
         description={<><Link to={`/borrowers/${loan.borrower_id}`} className="font-medium text-foreground hover:underline">{loan.borrower_name}</Link> · {loan.borrower_code} · {peso(loan.principal)} · {METHOD_LABEL[loan.interest_method]} {rateLabel(loan.interest_rate, loan.rate_period)}</>}
         actions={
           <>
@@ -193,6 +195,7 @@ function OverviewTab({ loan, onSettle }: { loan: LoanView; onSettle: () => void 
   const calc: LoanCalculation = { summary: loan.calc_summary, schedule: [], disclosures: [], warnings: [] }
   return (
     <div className="space-y-5">
+      <RenewalPanel loan={loan} />
       {(isOpen || loan.status === 'completed') && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
           <StatCard label="Remaining payable" value={peso(loan.total_outstanding)} tone="navy" hint={toNumber(loan.overdue_amount) > 0 ? <span className="text-red-600">{peso(loan.overdue_amount)} overdue</span> : 'Nothing overdue'} />

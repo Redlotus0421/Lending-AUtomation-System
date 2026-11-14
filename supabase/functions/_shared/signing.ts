@@ -18,6 +18,9 @@ export async function commitSignature(admin: SupabaseClient, p: {
   sessionId?: string | null
   signerName: string
   signerUserId?: string | null
+  /** 'in_person' when a staff member witnesses the borrower signing on their device */
+  verificationMethod?: 'none' | 'in_person'
+  witnessedBy?: string | null
   png: Uint8Array
   ip: string
   userAgent: string
@@ -35,6 +38,8 @@ export async function commitSignature(admin: SupabaseClient, p: {
       session_id: p.sessionId ?? null,
       signer_name: p.signerName,
       signer_user_id: p.signerUserId ?? null,
+      verification_method: p.verificationMethod ?? null,
+      witnessed_by: p.witnessedBy ?? null,
       image_path: imagePath,
       image_hash: imageHash,
       consent_text: CONSENT_TEXT(data.agreement.agreement_number),

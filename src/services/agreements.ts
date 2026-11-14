@@ -67,7 +67,8 @@ export const agreementsService = {
       p_agreement_id: agreementId, p_signer_role: role, p_signer_name: signerName ?? null, p_contact: contact ?? null, p_expiry_hours: expiryHours ?? null,
     }),
   revokeLink: (sessionId: string) => rpc('signing_session_revoke', { p_session_id: sessionId }),
-  signInApp: (p: { agreement_id: string; role: string; signature: string; signer_name?: string }) =>
+  /** Staff signatures, or the borrower signing in person on this device (`in_person: true`). */
+  signInApp: (p: { agreement_id: string; role: string; signature: string; signer_name?: string; in_person?: boolean }) =>
     invoke<{ commit: Record<string, unknown>; result: Record<string, unknown> }>('agreement-sign', { action: 'sign', consent: true, ...p }),
   rebuild: (agreementId: string) => invoke('agreement-sign', { action: 'rebuild', agreement_id: agreementId }),
   pdfUrl: (path: string, download?: string) => signedUrl('agreements', path, 900, download),

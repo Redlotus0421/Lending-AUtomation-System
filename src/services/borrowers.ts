@@ -99,8 +99,9 @@ export const borrowersService = {
   async documents(borrowerId: string): Promise<BorrowerDocument[]> {
     return must(await supabase.from('borrower_documents').select('*').eq('borrower_id', borrowerId).order('created_at', { ascending: false })) as BorrowerDocument[]
   },
-  async addDocument(orgId: string, borrowerId: string, file: File, documentType: string, title?: string) {
-    const path = await borrowersService.uploadBorrowerFile(orgId, borrowerId, 'documents', file)
+  /** Sensitive documents (e.g. ATM cards) go to the 'identity' folder, readable only with borrowers.view_sensitive. */
+  async addDocument(orgId: string, borrowerId: string, file: File, documentType: string, title?: string, category: 'documents' | 'identity' = 'documents') {
+    const path = await borrowersService.uploadBorrowerFile(orgId, borrowerId, category, file)
     return must(await supabase.from('borrower_documents').insert({
       borrower_id: borrowerId, document_type: documentType, title: title || file.name, file_path: path,
       file_name: file.name, mime_type: file.type, file_size: file.size,

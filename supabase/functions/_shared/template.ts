@@ -59,6 +59,15 @@ export const PLACEHOLDERS: { key: string; label: string; group: string }[] = [
   { key: 'last_payment_date', label: 'Last payment date', group: 'Loan terms' },
   { key: 'penalty_terms', label: 'Late payment terms', group: 'Loan terms' },
   { key: 'allocation_order', label: 'Payment allocation order', group: 'Loan terms' },
+  { key: 'co_maker_name', label: 'Co-maker name', group: 'Co-maker' },
+  { key: 'co_maker_relationship', label: 'Co-maker relationship', group: 'Co-maker' },
+  { key: 'co_maker_mobile', label: 'Co-maker mobile', group: 'Co-maker' },
+  { key: 'co_maker_address', label: 'Co-maker address', group: 'Co-maker' },
+  { key: 'transaction_type', label: 'Transaction type (new loan / renewal)', group: 'Renewal' },
+  { key: 'previous_loan_numbers', label: 'Previous loan reference(s)', group: 'Renewal' },
+  { key: 'previous_loan_balance', label: 'Previous loan balance deducted', group: 'Renewal' },
+  { key: 'net_release_amount', label: 'Net amount released to borrower', group: 'Renewal' },
+  { key: 'renewal_terms', label: 'Renewal / offset clause', group: 'Renewal' },
   { key: 'repayment_schedule', label: 'Repayment schedule (table)', group: 'Blocks' },
   { key: 'disclosure_table', label: 'Disclosure statement (table)', group: 'Blocks' },
   { key: 'signature_block', label: 'Signature section', group: 'Blocks' },
@@ -81,6 +90,44 @@ export type RenderData = {
   officer: { full_name: string | null }
   settings?: Record<string, any>
   signatures?: any[]
+  /** Previous loan(s) settled from this loan's proceeds (Reloan / Renew) */
+  renewal?: { loans: { loan_number: string; amount: number | string; as_of: string; status: string }[]; total: number | string; as_of: string; net_release: number | string } | null
+  /** Most recent co-maker / guarantor on file for the borrower */
+  co_maker?: { full_name: string; relationship?: string | null; mobile_number?: string | null; address?: string | null } | null
+}
+
+/** Sentence describing the renewal offset (empty when the loan is not a renewal). */
+export function renewalTermsText(d: RenderData): string {
+  const r = d.renewal
+  if (!r || !r.loans?.length) return ''
+  const refs = r.loans.map((l) => `${l.loan_number} (${money(l.amount)})`).join(', ')
+  return `This loan renews the Borrower's previous loan${r.loans.length > 1 ? 's' : ''} ${refs}. The outstanding balance of ` +
+    `${money(r.total)}, computed as of ${longDate(r.as_of)}, is deducted from the net proceeds of this loan and applied as full ` +
+    `settlement of the previous loan${r.loans.length > 1 ? 's' : ''} on the release date. The net amount released to the Borrower ` +
+    `is ${money(r.net_release)}. If the release takes place on a later date, the balance is recomputed as of the release date under ` +
+    "the Lender's early settlement rules and the net amount released is adjusted accordingly."
+}
+
+/**
+ * Templates written before Simplified Lending do not mention renewals or co-makers. For simplified
+ * loans the matching clauses are inserted automatically before the signature section, so every
+ * renewal agreement states the deduction even if the template was never edited.
+ */
+export function withAutomaticClauses(body: string, d: RenderData): string {
+  const extra: string[] = []
+  if (d.renewal?.loans?.length && !/\{\{\s*renewal_terms\s*\}\}/i.test(body)) {
+    extra.push('## Renewal and Offset of Previous Loan', '', '{{renewal_terms}}', '')
+  }
+  if (d.loan?.lending_mode === 'simplified' && d.co_maker?.full_name && !/\{\{\s*co_maker_name\s*\}\}/i.test(body)) {
+    extra.push('## Co-Maker', '',
+      '**{{co_maker_name}}** ({{co_maker_relationship}}), mobile {{co_maker_mobile}}, residing at {{co_maker_address}}, ' +
+      "acknowledges this loan as the Borrower's co-maker.", '')
+  }
+  if (!extra.length) return body
+  const lines = body.replace(/\r\n?/g, '\n').split('\n')
+  const at = lines.findIndex((l) => /^\s*\{\{\s*signature_block\s*\}\}\s*$/i.test(l))
+  if (at < 0) return [...lines, '', ...extra].join('\n')
+  return [...lines.slice(0, at), ...extra, ...lines.slice(at)].join('\n')
 }
 
 export function orgAddress(o: Record<string, any>): string {
@@ -139,6 +186,15 @@ export function buildPlaceholderValues(d: RenderData): Record<string, string> {
     last_payment_date: longDate(s.last_due_date),
     penalty_terms: penaltyTerms(d.loan),
     allocation_order: allocationOrderText(d.loan.allocation_order),
+    co_maker_name: d.co_maker?.full_name || '—',
+    co_maker_relationship: d.co_maker?.relationship || '—',
+    co_maker_mobile: d.co_maker?.mobile_number || '—',
+    co_maker_address: d.co_maker?.address || '—',
+    transaction_type: d.renewal?.loans?.length || (d.loan.lending_mode === 'simplified' && /renewal/i.test(d.loan.purpose ?? '')) ? 'Loan renewal' : 'New loan',
+    previous_loan_numbers: d.renewal?.loans?.map((l) => l.loan_number).join(', ') || 'Not applicable',
+    previous_loan_balance: d.renewal ? money(d.renewal.total) : money(0),
+    net_release_amount: money(d.renewal ? d.renewal.net_release : s.net_proceeds),
+    renewal_terms: renewalTermsText(d) || 'Not applicable.',
   }
 }
 
@@ -150,6 +206,10 @@ export function disclosureRows(d: RenderData): [string, string][] {
     ['Principal amount of the loan', money(s.principal)],
     [`Fees and charges (${deducted ? 'deducted from proceeds' : 'added to installments'})`, money(s.total_charges)],
     ['Net proceeds to the Borrower', money(s.net_proceeds)],
+    ...(d.renewal?.loans?.length ? [
+      [`Less: outstanding balance of previous loan${d.renewal.loans.length > 1 ? 's' : ''} ${d.renewal.loans.map((l) => l.loan_number).join(', ')} (as of ${shortDate(d.renewal.as_of)})`, money(d.renewal.total)],
+      ['Net amount released to the Borrower', money(d.renewal.net_release)],
+    ] as [string, string][] : []),
     ['Total interest', money(s.total_interest)],
     ['Finance charge (interest + fees and charges)', money(s.finance_charge)],
     ['Total amount payable', money(s.total_repayment)],

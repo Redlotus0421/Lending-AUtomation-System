@@ -14,6 +14,7 @@ import { fmtDate, peso, todayManila, toNumber } from '@/lib/format'
 import { FREQUENCIES, PAYMENT_METHODS, RATE_PERIODS } from '@/lib/constants'
 import type { LoanView } from '@/types/db'
 import { HeadlineFigures, ScheduleTable } from './LoanPreview'
+import { useLoanRenewals } from './simplified/RenewalPanel'
 
 type Props = { loan: LoanView; open: boolean; onOpenChange: (o: boolean) => void; onDone: () => void }
 
@@ -52,13 +53,18 @@ export function ApproveDialog({ loan, open, onOpenChange, onDone }: Props) {
 }
 
 export function ReleaseDialog({ loan, open, onOpenChange, onDone }: Props) {
+  const renewals = useLoanRenewals(loan.id)
+  const pendingRenewals = (renewals.data ?? []).filter((r) => r.new_loan_id === loan.id && r.status === 'pending')
+  const estimate = pendingRenewals.reduce((t, r) => t + toNumber(r.quoted_amount), 0)
   const [date, setDate] = useState(todayManila())
   const [method, setMethod] = useState('cash')
   const [reference, setReference] = useState('')
   const m = useMutation({
     mutationFn: () => loansService.release(loan.id, { release_date: date, method, reference }),
     onSuccess: (r) => {
-      toast.success(`Loan released and activated — ${r.installments} installments scheduled`)
+      toast.success(toNumber(r.renewal_deduction) > 0
+        ? `Released ${peso(r.net_release)} after settling ${peso(r.renewal_deduction)} of previous balance — ${r.installments} installments scheduled`
+        : `Loan released and activated — ${r.installments} installments scheduled`)
       onOpenChange(false)
       onDone()
     },
@@ -76,6 +82,14 @@ export function ReleaseDialog({ loan, open, onOpenChange, onDone }: Props) {
           <p className="tabular text-2xl font-semibold">{peso(loan.net_proceeds)}</p>
           <p className="text-xs text-white/60">Principal {peso(loan.principal)}{toNumber(loan.total_charges) - toNumber(loan.financed_charges) > 0 ? ` less deducted charges ${peso(toNumber(loan.total_charges) - toNumber(loan.financed_charges))}` : ''}</p>
         </div>
+        {pendingRenewals.length > 0 && (
+          <div className="space-y-1.5 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+            <p className="font-semibold">Renewal: previous loan{pendingRenewals.length > 1 ? 's' : ''} {pendingRenewals.map((r) => r.old_loan?.loan_number).join(', ')} will be settled first</p>
+            <div className="flex justify-between"><span>Previous balance (quoted {fmtDate(pendingRenewals[0].quoted_as_of)})</span><span className="tabular font-medium">− {peso(estimate)}</span></div>
+            <div className="flex justify-between border-t border-amber-200 pt-1.5 font-semibold"><span>Estimated amount to hand over</span><span className="tabular">{peso(toNumber(loan.net_proceeds) - estimate)}</span></div>
+            <p className="text-xs">The payoff is recomputed as of the release date and posted as a settlement payment on the previous loan.</p>
+          </div>
+        )}
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Release date"><Input type="date" value={date} max={todayManila()} onChange={(e) => setDate(e.target.value)} className="h-10" /></Field>
           <Field label="Release method">

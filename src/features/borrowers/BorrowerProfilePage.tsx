@@ -59,7 +59,7 @@ export default function BorrowerProfilePage() {
   const { id = '' } = useParams()
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const { can } = useAuth()
+  const { can, organization } = useAuth()
   const [tab, setTab] = useState('overview')
   const [statusAction, setStatusAction] = useState<null | 'archived' | 'blacklisted' | 'active'>(null)
 
@@ -108,7 +108,7 @@ export default function BorrowerProfilePage() {
           </div>
           <div className="flex flex-wrap gap-2">
             {can('loans.create') && b.status === 'active' && (
-              <Button onClick={() => navigate(`/loans/new?borrower=${b.id}`)}><PlusCircle /> New loan</Button>
+              <Button onClick={() => navigate(`/loans/new?borrower=${b.id}`)}><PlusCircle /> {organization?.lending_mode === 'simplified' ? 'Reloan / Renew' : 'New loan'}</Button>
             )}
             {can('borrowers.edit') && <Button variant="outline" onClick={() => navigate(`/borrowers/${b.id}/edit`)}><Pencil /> Edit</Button>}
             {can('borrowers.archive') && (

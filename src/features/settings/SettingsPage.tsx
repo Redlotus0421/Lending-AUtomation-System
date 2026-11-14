@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
-  ArrowDown, ArrowUp, Building2, Database, FileSignature, ImagePlus, Info, Percent, Receipt, Save, ShieldCheck, Timer, Wallet,
+  ArrowDown, ArrowUp, Building2, Database, FileSignature, ImagePlus, Info, Lock, Percent, Receipt, Save, ShieldCheck, Timer, Wallet, Zap,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -95,6 +95,7 @@ export default function SettingsPage() {
     { value: 'repayment', label: 'Repayment', icon: <Wallet /> },
     { value: 'penalty', label: 'Late payments', icon: <Timer /> },
     { value: 'agreement', label: 'Agreements', icon: <FileSignature /> },
+    { value: 'simplified', label: 'Simplified lending', icon: <Zap /> },
     { value: 'receipt', label: 'Receipts', icon: <Receipt /> },
     { value: 'security', label: 'Security', icon: <ShieldCheck /> },
     ...(access?.role === 'owner' ? [{ value: 'data', label: 'Sample data', icon: <Database /> }] : []),
@@ -115,6 +116,7 @@ export default function SettingsPage() {
           <TabsContent value="repayment"><RepaymentSection value={s.repayment} /></TabsContent>
           <TabsContent value="penalty"><PenaltySection value={s.penalty} /></TabsContent>
           <TabsContent value="agreement"><AgreementSection value={s.agreement} /></TabsContent>
+          <TabsContent value="simplified"><SimplifiedSection value={s.simplified ?? { allow_rate_override: false, default_term: 6, processing_fee_type: 'none', processing_fee_value: 0, approve_on_create: true }} settings={s} /></TabsContent>
           <TabsContent value="receipt"><ReceiptSection value={s.receipt} /></TabsContent>
           <TabsContent value="security"><SecuritySection value={s.security} /></TabsContent>
           {access?.role === 'owner' && <TabsContent value="data"><SampleDataSection /></TabsContent>}
@@ -586,5 +588,76 @@ function SampleDataSection() {
           await qc.invalidateQueries()
         }} />
     </Panel>
+  )
+}
+
+// ---------------------------------------------------------------------------
+function SimplifiedSection({ value, settings }: { value: Settings['simplified']; settings: Settings }) {
+  const { organization } = useAuth()
+  const { save, saving } = useSaveSection()
+  const [v, setV] = useState(value)
+  useEffect(() => setV(value), [value])
+  const active = organization?.lending_mode === 'simplified'
+  const onSave = () => {
+    if (!numberOk(v.default_term, 1, 3660, true)) return toast.error('Default duration must be a whole number from 1 to 3,660')
+    if (v.processing_fee_type !== 'none' && !numberOk(v.processing_fee_value, 0, v.processing_fee_type === 'percent' ? 50 : 1_000_000)) {
+      return toast.error(v.processing_fee_type === 'percent' ? 'Fee percentage must be between 0 and 50' : 'Enter the fee amount')
+    }
+    void save('simplified', {
+      ...v,
+      default_term: Number(v.default_term),
+      processing_fee_value: v.processing_fee_type === 'none' ? 0 : Number(v.processing_fee_value),
+    })
+  }
+  return (
+    <div className="space-y-4">
+      <div className={`flex gap-3 rounded-xl border p-4 text-sm ${active ? 'border-teal-200 bg-teal-50 text-teal-900' : 'bg-slate-50 text-slate-700'}`}>
+        <Lock className="mt-0.5 size-4 shrink-0" />
+        <div>
+          <p className="font-semibold">Lending mode: {active ? 'Simplified Lending' : 'Complete Lending'}</p>
+          <p className="text-xs">
+            Set by your LendFlow platform administrator. {active
+              ? 'Every user creates loans with the New Loan / Reloan-Renew workflow below.'
+              : 'These settings apply only if your account is switched to Simplified Lending.'}
+          </p>
+        </div>
+      </div>
+      <Panel title="Simplified lending rules" description="Applied automatically to every simplified loan. Staff enter only the amount and the duration.">
+        <div className="space-y-4">
+          <div className="grid gap-3 rounded-lg bg-slate-50 p-3 text-sm sm:grid-cols-3">
+            <div><p className="text-xs text-muted-foreground">Interest rate (Interest tab)</p><p className="font-semibold">{settings.interest.default_rate}% per {settings.interest.default_rate_period.replace('ly', '').replace('dai', 'day')}</p></div>
+            <div><p className="text-xs text-muted-foreground">Method</p><p className="font-semibold">{settings.interest.default_method === 'flat' ? 'Flat' : 'Diminishing balance'}</p></div>
+            <div><p className="text-xs text-muted-foreground">Payments (Repayment tab)</p><p className="font-semibold capitalize">{settings.repayment.default_frequency}</p></div>
+          </div>
+          <Toggle label="Allow staff to change the interest rate per loan"
+            description="Off: every simplified loan uses the default rate above and the server rejects any other rate."
+            checked={v.allow_rate_override} onChange={(x) => setV({ ...v, allow_rate_override: x })} />
+          <Toggle label="Approve at creation when the user has approval rights"
+            description="Owners and admins skip the separate review step. Segregation-of-duties rules in Repayment still apply."
+            checked={v.approve_on_create} onChange={(x) => setV({ ...v, approve_on_create: x })} />
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Default repayment term" hint="Number of installments suggested on new loans">
+              <Input className="h-10" inputMode="numeric" value={v.default_term} onChange={(e) => setV({ ...v, default_term: e.target.value as unknown as number })} />
+            </Field>
+            <Field label="Processing fee">
+              <NativeSelect value={v.processing_fee_type} onChange={(e) => setV({ ...v, processing_fee_type: e.target.value as Settings['simplified']['processing_fee_type'] })}>
+                <option value="none">None</option>
+                <option value="percent">Percent of principal</option>
+                <option value="fixed">Fixed amount</option>
+              </NativeSelect>
+            </Field>
+            <Field label={v.processing_fee_type === 'percent' ? 'Fee (%)' : 'Fee (₱)'} hint={`Collected: ${settings.repayment.charges_treatment === 'added' ? 'added to installments' : 'deducted from proceeds'}`}>
+              <Input className="h-10" inputMode="decimal" disabled={v.processing_fee_type === 'none'} value={v.processing_fee_value}
+                onChange={(e) => setV({ ...v, processing_fee_value: e.target.value as unknown as number })} />
+            </Field>
+          </div>
+          <div className="flex gap-2 rounded-lg bg-blue-50 p-3 text-xs text-blue-900">
+            <Info className="mt-0.5 size-4 shrink-0" />
+            Renewals deduct the borrower's outstanding balance (early-settlement payoff, Repayment tab) from the new loan and settle the previous loan in full when the new loan is released.
+          </div>
+        </div>
+        <SaveBar saving={saving} onSave={onSave} />
+      </Panel>
+    </div>
   )
 }

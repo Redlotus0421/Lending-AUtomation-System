@@ -7,6 +7,8 @@ export type InterestMethod = 'flat' | 'diminishing'
 export type RatePeriod = 'daily' | 'weekly' | 'monthly' | 'yearly'
 export type Frequency = 'daily' | 'weekly' | 'monthly'
 export type Money = number | string
+/** Loan-creation workflow of a business, chosen by the platform administrator */
+export type LendingMode = 'complete' | 'simplified'
 
 export interface Organization {
   id: string
@@ -25,6 +27,8 @@ export interface Organization {
   currency: string
   timezone: string
   date_format: string
+  lending_mode: LendingMode
+  lending_mode_changed_at: string | null
   created_at: string
 }
 
@@ -234,6 +238,9 @@ export interface Loan {
   defaulted_at: string | null
   default_reason: string | null
   terms_snapshot_id: string | null
+  lending_mode: LendingMode
+  /** Previous-loan balance settled from this loan's proceeds at release (renewals) */
+  renewal_deduction: Money
   created_at: string
   updated_at: string
 }
@@ -609,6 +616,11 @@ export interface Settings {
   }
   security: { session_timeout_minutes: number; password_min_length: number; audit_logging: boolean }
   receipt: { footer_note: string }
+  simplified: {
+    allow_rate_override: boolean; default_term: number
+    processing_fee_type: 'none' | 'fixed' | 'percent'; processing_fee_value: number
+    approve_on_create: boolean
+  }
 }
 
 export interface ReportColumn {
@@ -650,6 +662,7 @@ export interface PlatformOrg {
   status: AccountStatus
   status_reason: string | null
   status_changed_at: string | null
+  lending_mode: LendingMode
   created_at: string
   owner: PlatformOwner | null
   stats: PlatformOrgStats
@@ -669,6 +682,7 @@ export interface PlatformOrgDetail extends PlatformOrg {
   tin: string | null
   address: string | null
   zip_code: string | null
+  lending_mode_changed_at: string | null
   members: PlatformMember[]
 }
 export interface PlatformOverview {
@@ -682,4 +696,77 @@ export interface PlatformOverview {
   outstanding: Money
   collected_30d: Money
   signups_by_month: { month: string; count: number }[]
+}
+
+// ---------- simplified lending ----------
+export interface LoanRenewal {
+  id: string
+  new_loan_id: string
+  old_loan_id: string
+  status: 'pending' | 'settled' | 'cancelled' | 'closed_before_release'
+  quoted_amount: Money
+  quoted_contract_balance: Money
+  quoted_interest_rebate: Money
+  quoted_as_of: string
+  settled_amount: Money | null
+  settled_contract_balance: Money | null
+  settled_interest_rebate: Money | null
+  settled_as_of: string | null
+  settlement_payment_id: string | null
+  settled_at: string | null
+  created_at: string
+}
+
+export interface RenewalOpenLoan {
+  loan_id: string
+  loan_number: string
+  status: LoanStatus
+  principal: Money
+  release_date: string
+  maturity_date: string
+  installment_amount: Money
+  contract_balance: Money
+  outstanding_principal: Money
+  payoff: Money
+  payoff_principal: Money
+  payoff_interest: Money
+  payoff_charges: Money
+  payoff_penalties: Money
+  interest_rebate: Money
+  pending_renewal_loan: string | null
+}
+
+export interface RenewalQuote {
+  as_of: string
+  rule: string
+  total: Money
+  loans: RenewalOpenLoan[]
+}
+
+export interface SimplifiedBorrowerStatus {
+  borrower: {
+    id: string; borrower_code: string; full_name: string; mobile_number: string; email: string | null; status: string
+    address: string; employer_name: string | null; profile_photo_path: string | null
+  }
+  co_maker: { full_name: string; relationship: string | null; mobile_number: string | null } | null
+  open_loans: RenewalOpenLoan[]
+  total_contract_balance: Money
+  total_payoff: Money
+  as_of: string
+  settlement_rule: string
+  has_outstanding: boolean
+  pipeline_loans: { id: string; loan_number: string; status: LoanStatus; principal: Money; created_at: string }[]
+  history: {
+    id: string; loan_number: string; status: LoanStatus; principal: Money; total_repayment: Money; total_paid: Money
+    release_date: string; completed_at: string | null; lending_mode: LendingMode; renewal_deduction: Money
+  }[]
+}
+
+export type SimplifiedPreview = LoanCalculation & {
+  params: Record<string, unknown>
+  transaction_type: 'new' | 'renewal'
+  renewal: RenewalQuote | null
+  renewal_deduction: Money
+  net_release: Money
+  rate_overridden: boolean
 }

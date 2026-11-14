@@ -14,8 +14,10 @@ import { platformService } from '@/services/platform'
 import { ROLE_LABEL } from '@/lib/constants'
 import { fmtDate, fmtDateTime, initials, num, peso, timeAgo } from '@/lib/format'
 import { errorMessage } from '@/lib/errors'
-import type { PlatformMember, PlatformOrgDetail } from '@/types/db'
-import { AccountStatusPill, AddUserDialog, CredentialsDialog, ResetPasswordDialog, type Credentials } from './dialogs'
+import type { LendingMode, PlatformMember, PlatformOrgDetail } from '@/types/db'
+import {
+  AccountStatusPill, AddUserDialog, CredentialsDialog, LENDING_MODES, LendingModePicker, LendingModePill, ResetPasswordDialog, type Credentials,
+} from './dialogs'
 
 const ROLE_TONE: Record<string, 'navy' | 'blue' | 'teal' | 'amber'> = { owner: 'navy', admin: 'blue', loan_officer: 'teal', collector: 'amber' }
 
@@ -68,7 +70,7 @@ export default function AccountDetailPage() {
     <div className="space-y-5">
       <PageHeader
         back={<Link to="/admin/accounts" className="mb-2 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="size-4" /> Lender accounts</Link>}
-        title={<span className="flex items-center gap-3">{o.name} <AccountStatusPill status={o.status} /></span>}
+        title={<span className="flex flex-wrap items-center gap-3">{o.name} <AccountStatusPill status={o.status} /> <LendingModePill mode={o.lending_mode ?? 'complete'} /></span>}
         description={`Created ${fmtDate(o.created_at, 'long')}${o.legal_name ? ` · ${o.legal_name}` : ''}`}
         actions={<>
           <Button variant="outline" onClick={() => setEditing(true)}><Pencil /> Edit details</Button>
@@ -93,6 +95,8 @@ export default function AccountDetailPage() {
         <StatCard label="Outstanding" value={peso(o.stats.outstanding, { compact: true })} icon={<Wallet />} tone="amber" />
         <StatCard label="Collected" value={peso(o.stats.collected, { compact: true })} hint="All posted payments" icon={<Wallet />} tone="green" className="col-span-2 lg:col-span-1" />
       </div>
+
+      <LendingModePanel key={o.lending_mode} org={o} onChanged={() => void refresh()} />
 
       <div className="grid gap-5 lg:grid-cols-[1fr_1.6fr]">
         <Panel title="Business details">
@@ -199,5 +203,37 @@ function EditAccountDialog({ org, onClose }: { org: PlatformOrgDetail; onClose: 
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+function LendingModePanel({ org, onChanged }: { org: PlatformOrgDetail; onChanged: () => void }) {
+  const current = org.lending_mode ?? 'complete'
+  const [mode, setMode] = useState<LendingMode>(current)
+  const [confirm, setConfirm] = useState(false)
+  const target = LENDING_MODES.find((m) => m.value === mode)!
+  return (
+    <Panel title="Lending mode" description="Controls the loan-creation workflow for every lender and staff member of this business. Users are never asked to choose it themselves.">
+      <LendingModePicker value={mode} onChange={setMode} />
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">
+          {org.lending_mode_changed_at ? `Last changed ${fmtDateTime(org.lending_mode_changed_at)}. ` : ''}Loans already in progress keep their workflow; only new loans follow the selected mode.
+        </p>
+        <Button disabled={mode === current} onClick={() => setConfirm(true)}>Apply {target.label}</Button>
+      </div>
+      <ConfirmDialog
+        open={confirm}
+        onOpenChange={setConfirm}
+        title={`Switch ${org.name} to ${target.label}?`}
+        description={mode === 'simplified'
+          ? 'All users will create loans with the simplified New Loan / Reloan-Renew workflow, using the interest rate and fees in the business settings. Existing loans are not changed.'
+          : 'All users will create loans with the comprehensive workflow. Existing simplified loans keep their terms and continue through approval, signing and release.'}
+        confirmLabel={`Switch to ${target.label}`}
+        onConfirm={async () => {
+          await platformService.setLendingMode(org.id, mode)
+          onChanged()
+          toast.success(`${org.name} now uses ${target.label}`)
+        }}
+      />
+    </Panel>
   )
 }

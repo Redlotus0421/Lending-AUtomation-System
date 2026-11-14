@@ -15,6 +15,7 @@ const BorrowerProfilePage = lazy(() => import('@/features/borrowers/BorrowerProf
 const LoanApplicationsPage = lazy(() => import('@/features/loans/LoanApplicationsPage'))
 const LoansPage = lazy(() => import('@/features/loans/LoansPage'))
 const LoanWizardPage = lazy(() => import('@/features/loans/LoanWizardPage'))
+const NewLoanPage = lazy(() => import('@/features/loans/NewLoanPage'))
 const LoanDetailPage = lazy(() => import('@/features/loans/LoanDetailPage'))
 const AgreementsPage = lazy(() => import('@/features/agreements/AgreementsPage'))
 const TemplatesPage = lazy(() => import('@/features/agreements/TemplatesPage'))
@@ -84,7 +85,7 @@ export default function App() {
 
           <Route path="applications" element={guard('loans.view', <LoanApplicationsPage />)} />
           <Route path="loans" element={guard('loans.view', <LoansPage />)} />
-          <Route path="loans/new" element={guard('loans.create', <LoanWizardPage />)} />
+          <Route path="loans/new" element={guard('loans.create', <NewLoanPage />)} />
           <Route path="loans/:id" element={guard('loans.view', <LoanDetailPage />)} />
           <Route path="loans/:id/edit" element={guard('loans.create', <LoanWizardPage />)} />
 

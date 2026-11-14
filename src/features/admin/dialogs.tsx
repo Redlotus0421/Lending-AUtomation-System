@@ -4,7 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Check, Copy, Eye, EyeOff, KeyRound, RefreshCw } from 'lucide-react'
+import { Check, CheckCircle2, Copy, Eye, EyeOff, KeyRound, ListChecks, RefreshCw, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -13,10 +13,52 @@ import { generatePassword, platformService } from '@/services/platform'
 import { errorMessage } from '@/lib/errors'
 import { ROLE_LABEL } from '@/lib/constants'
 import { normalizePhMobile } from '@/lib/format'
-import type { AccountStatus, AppRole } from '@/types/db'
+import { cn } from '@/lib/utils'
+import type { AccountStatus, AppRole, LendingMode } from '@/types/db'
 
 export function AccountStatusPill({ status }: { status: AccountStatus }) {
   return status === 'active' ? <Pill tone="green">Active</Pill> : <Pill tone="red">Suspended</Pill>
+}
+
+export const LENDING_MODES: { value: LendingMode; label: string; icon: React.ReactNode; description: string; points: string[] }[] = [
+  {
+    value: 'complete', label: 'Complete Lending', icon: <ListChecks className="size-5" />,
+    description: 'The comprehensive workflow: loan products, custom interest method and rate, fees, penalties, signing order and witnesses per loan.',
+    points: ['Full borrower profiles', 'Per-loan terms & products', 'Review, approval, signing links, release'],
+  },
+  {
+    value: 'simplified', label: 'Simplified Lending', icon: <Zap className="size-5" />,
+    description: 'A fast New Loan / Reloan-Renew flow. Staff enter only the amount and duration; rates and fees follow the business settings.',
+    points: ['Quick borrower registration', 'Automatic outstanding-balance deduction on renewal', 'In-person signature on the device'],
+  },
+]
+
+export function LendingModePill({ mode }: { mode: LendingMode }) {
+  return mode === 'simplified' ? <Pill tone="teal" dot={false}>Simplified</Pill> : <Pill tone="navy" dot={false}>Complete</Pill>
+}
+
+/** Two-card picker for the business's lending mode (platform administrators only). */
+export function LendingModePicker({ value, onChange, disabled }: { value: LendingMode; onChange: (m: LendingMode) => void; disabled?: boolean }) {
+  return (
+    <div role="radiogroup" aria-label="Lending mode" className="grid gap-3 sm:grid-cols-2">
+      {LENDING_MODES.map((m) => {
+        const on = value === m.value
+        return (
+          <button key={m.value} type="button" role="radio" aria-checked={on} disabled={disabled} onClick={() => onChange(m.value)}
+            className={cn('rounded-xl border-2 p-3 text-left transition disabled:opacity-60', on ? 'border-[#2563EB] bg-blue-50/60' : 'border-slate-200 hover:border-slate-300')}>
+            <span className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-2 text-sm font-semibold">{m.icon}{m.label}</span>
+              {on && <CheckCircle2 className="size-4 text-[#2563EB]" />}
+            </span>
+            <span className="mt-1 block text-xs text-muted-foreground">{m.description}</span>
+            <span className="mt-2 block space-y-0.5">
+              {m.points.map((p) => <span key={p} className="flex items-center gap-1.5 text-xs"><Check className="size-3 text-teal-600" />{p}</span>)}
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
 }
 
 function useCopy() {
@@ -125,6 +167,7 @@ export function CreateAccountDialog({ onClose, onCreated }: { onClose: () => voi
     resolver: zodResolver(accountSchema),
     defaultValues: { name: '', owner_name: '', owner_email: '', password: generatePassword() },
   })
+  const [mode, setMode] = useState<LendingMode>('complete')
   const e = form.formState.errors
   const submit = form.handleSubmit(async (v) => {
     setBusy(true)
@@ -133,6 +176,7 @@ export function CreateAccountDialog({ onClose, onCreated }: { onClose: () => voi
         organization: {
           name: v.name, legal_name: v.legal_name, registration_no: v.registration_no, tin: v.tin,
           address: v.address, city: v.city, province: v.province, contact_phone: v.contact_phone, contact_email: v.owner_email,
+          lending_mode: mode,
         },
         owner: { full_name: v.owner_name, email: v.owner_email, phone: v.owner_phone ? normalizePhMobile(v.owner_phone) ?? v.owner_phone : undefined, password: v.password },
       })
@@ -168,6 +212,11 @@ export function CreateAccountDialog({ onClose, onCreated }: { onClose: () => voi
               <Field label="Province"><Input className="h-10" {...form.register('province')} /></Field>
               <Field label="Business phone"><Input className="h-10" placeholder="+63 2 8xxx xxxx" {...form.register('contact_phone')} /></Field>
             </div>
+          </section>
+          <section className="space-y-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Lending mode</h3>
+            <LendingModePicker value={mode} onChange={setMode} disabled={busy} />
+            <p className="text-xs text-muted-foreground">Decides the loan-creation workflow for every user of this business. You can change it later.</p>
           </section>
           <section className="space-y-3">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Owner login</h3>
