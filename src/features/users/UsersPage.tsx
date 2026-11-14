@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { KeyRound, MoreHorizontal, Power, RotateCcw, ShieldCheck, UserCog, UserPlus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { PasswordInput } from '@/components/ui/password-input'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -206,7 +207,7 @@ function AddStaffDialog({ onClose, isOwner, minPw }: { onClose: () => void; isOw
               </Field>
               <Field label="Temporary password" error={errors.password?.message}>
                 <div className="flex gap-2">
-                  <Input className="h-10 font-mono" autoComplete="new-password" {...register('password')} />
+                  <PasswordInput defaultVisible className="h-10 font-mono" autoComplete="new-password" {...register('password')} />
                   <Button type="button" variant="outline" size="icon" className="size-10 shrink-0" aria-label="Generate password" onClick={() => setValue('password', generatePassword(), { shouldValidate: true })}><RotateCcw /></Button>
                 </div>
               </Field>
@@ -278,7 +279,7 @@ function ResetPasswordDialog({ user, minPw, onClose }: { user: StaffMember; minP
         </DialogHeader>
         <Field label="New password" error={pw.length < minPw ? `At least ${minPw} characters` : undefined}>
           <div className="flex gap-2">
-            <Input className="h-10 font-mono" value={pw} onChange={(e) => setPw(e.target.value)} disabled={done} />
+            <PasswordInput defaultVisible className="h-10 font-mono" autoComplete="new-password" value={pw} onChange={(e) => setPw(e.target.value)} readOnly={done} />
             {!done && <Button type="button" variant="outline" size="icon" className="size-10 shrink-0" onClick={() => setPw(generatePassword())} aria-label="Generate"><RotateCcw /></Button>}
           </div>
         </Field>

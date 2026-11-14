@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { Ban, Building2, FileSignature, KeyRound, LineChart, ShieldCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { PasswordInput } from '@/components/ui/password-input'
 import { Field, Spinner } from '@/components/common'
 import { authService, orgService } from '@/services/org'
 import { errorMessage } from '@/lib/errors'
@@ -87,7 +88,7 @@ export function LoginPage() {
           <Input type="email" autoComplete="email" className="h-11" {...form.register('email')} />
         </Field>
         <Field label="Password" error={form.formState.errors.password?.message}>
-          <Input type="password" autoComplete="current-password" className="h-11" {...form.register('password')} />
+          <PasswordInput autoComplete="current-password" className="h-11" {...form.register('password')} />
         </Field>
         <div className="flex justify-end">
           <button type="button" onClick={() => setForgot(true)} className="text-xs font-medium text-blue-600 hover:underline">Forgot password?</button>
@@ -151,7 +152,7 @@ export function ResetPasswordPage() {
           setBusy(false)
         }
       }}>
-        <Field label="New password" hint="At least 10 characters"><Input type="password" className="h-11" value={pw} onChange={(e) => setPw(e.target.value)} /></Field>
+        <Field label="New password" hint="At least 10 characters"><PasswordInput className="h-11" value={pw} onChange={(e) => setPw(e.target.value)} /></Field>
         <Button className="h-11 w-full" disabled={busy}>{busy && <Spinner />} Update password</Button>
       </form>
     </AuthLayout>
@@ -207,7 +208,7 @@ export function ProfilePage() {
         if (pw.length < 10) return toast.error('Use at least 10 characters')
         try { await authService.updatePassword(pw); setPw(''); toast.success('Password changed') } catch (err) { toast.error(errorMessage(err)) }
       }}>
-        <Field label="New password" hint="At least 10 characters"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} className="h-10" /></Field>
+        <Field label="New password" hint="At least 10 characters"><PasswordInput value={pw} onChange={(e) => setPw(e.target.value)} className="h-10" /></Field>
         <Button variant="outline">Change password</Button>
       </form>
     </div>
@@ -236,8 +237,8 @@ export function ForcePasswordChangePage() {
           setBusy(false)
         }
       }}>
-        <Field label="New password" hint="At least 10 characters"><Input type="password" autoComplete="new-password" className="h-11" value={pw} onChange={(e) => setPw(e.target.value)} /></Field>
-        <Field label="Confirm new password"><Input type="password" autoComplete="new-password" className="h-11" value={pw2} onChange={(e) => setPw2(e.target.value)} /></Field>
+        <Field label="New password" hint="At least 10 characters"><PasswordInput autoComplete="new-password" className="h-11" value={pw} onChange={(e) => setPw(e.target.value)} /></Field>
+        <Field label="Confirm new password"><PasswordInput autoComplete="new-password" className="h-11" value={pw2} onChange={(e) => setPw2(e.target.value)} /></Field>
         <Button className="h-11 w-full" disabled={busy}>{busy ? <Spinner /> : <KeyRound />} Save and continue</Button>
       </form>
       <button onClick={() => void signOut()} className="mt-6 text-sm font-medium text-blue-600 hover:underline">Sign out</button>
