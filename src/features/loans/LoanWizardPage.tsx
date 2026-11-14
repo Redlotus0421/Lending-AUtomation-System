@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
-  ArrowLeft, ArrowRight, Calculator, Check, CheckCircle2, ChevronDown, FileSignature, Pencil, RefreshCw, Search, UserPlus, X,
+  ArrowLeft, ArrowRight, Calculator, Check, CheckCircle2, ChevronDown, FileSignature, History, Pencil, RefreshCw, RotateCcw, Search, UserPlus, X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -28,6 +28,7 @@ import { errorMessage } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import type { Borrower, LoanProduct } from '@/types/db'
 import { Disclosures, HeadlineFigures, ScheduleTable, SummaryGrid } from './LoanPreview'
+import { clearDraft, loadDraft, saveDraft, useAutosave, useWizardSteps } from './wizard'
 
 const num = (msg: string) => z.number({ error: msg }).refine((v) => Number.isFinite(v), msg)
 
@@ -104,13 +105,40 @@ function toPayload(v: FormValues): LoanInput {
 
 const STEPS = ['Borrower', 'Loan details', 'Preview', 'Agreement']
 
+type CompleteDraft = { v: 1; step: number; values: FormValues; borrowerId: string | null; approveNow: boolean }
+
+/** JSON turns NaN into null; give number fields back their "empty" value so validation messages show. */
+function reviveValues(saved: Partial<FormValues>, defaults: FormValues): FormValues {
+  const out = { ...defaults, ...saved } as Record<string, unknown>
+  for (const [k, d] of Object.entries(defaults)) if (typeof d === 'number' && out[k] === null) out[k] = NaN
+  return out as FormValues
+}
+
 export default function LoanWizardPage() {
   const { id: editId } = useParams()
-  const [params] = useSearchParams()
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const { settings, can } = useAuth()
-  const [step, setStep] = useState(editId ? 1 : 0)
+  const { settings, can, access } = useAuth()
+  // The step lives in the URL so the browser Back / Forward buttons move between steps without
+  // losing anything typed; new-loan entries are also autosaved for this tab (see ./wizard).
+  const { step: stepParam, go: goStep, back: backStep, params } = useWizardSteps<string>(editId ? '1' : '0')
+  const step = Math.min(3, Math.max(editId ? 1 : 0, Math.trunc(Number(stepParam)) || 0))
+  const setStep = (n: number) => goStep(String(n))
+  const backTo = (n: number) => backStep(String(n))
+  const draftKey = `complete:${access?.user_id ?? 'anon'}`
+  const [initial] = useState<CompleteDraft | null>(() => {
+    if (editId) return null
+    const d = loadDraft<CompleteDraft>(draftKey)
+    if (!d || d.v !== 1) return null
+    const linked = params.get('borrower')
+    if (linked && d.borrowerId && d.borrowerId !== linked && !params.get('step')) {
+      clearDraft(draftKey)
+      return null
+    }
+    return d
+  })
+  const [restored, setRestored] = useState(!!initial && initial.step > 0)
+  const [saved, setSaved] = useState(false)
   const [borrower, setBorrower] = useState<Borrower | null>(null)
   const today = todayManila()
 
@@ -148,19 +176,24 @@ export default function LoanWizardPage() {
     witness_count: settings?.agreement.witness_count ?? 0,
   }), [settings, today])
 
-  const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: defaults, mode: 'onChange' })
+  const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: initial ? reviveValues(initial.values, defaults) : defaults, mode: 'onChange' })
   const { register, setValue, control, formState: { errors } } = form
   const values = useWatch({ control }) as FormValues
 
   // preselect borrower (?borrower=) or load from the loan being edited
-  const preselectId = editLoan.data?.borrower_id ?? params.get('borrower')
+  const preselectId = editLoan.data?.borrower_id ?? params.get('borrower') ?? initial?.borrowerId ?? null
   const preselected = useQuery({ queryKey: ['borrower', preselectId], queryFn: () => borrowersService.get(preselectId!), enabled: !!preselectId })
   useEffect(() => {
     if (preselected.data && !borrower) {
       setBorrower(preselected.data)
-      if (!editId) setStep(1)
+      if (!editId && !params.get('step') && !initial?.step && params.get('borrower')) goStep('1', { replace: true })
     }
-  }, [preselected.data, borrower, editId])
+  }, [preselected.data, borrower, editId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // resume a saved draft on the step where it was left
+  useEffect(() => {
+    if (!params.get('step') && initial && initial.step > 0) goStep(String(initial.step), { replace: true })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // prefill when editing
   useEffect(() => {
@@ -258,6 +291,8 @@ export default function LoanWizardPage() {
       return loan
     },
     onSuccess: (loan, mode) => {
+      setSaved(true)
+      clearDraft(draftKey)
       void qc.invalidateQueries({ queryKey: ['loans'] })
       void qc.invalidateQueries({ queryKey: ['loan', loan.id] })
       void qc.invalidateQueries({ queryKey: ['dashboard'] })
@@ -266,7 +301,28 @@ export default function LoanWizardPage() {
     },
     onError: (e) => toast.error(errorMessage(e)),
   })
-  const [approveNow, setApproveNow] = useState(false)
+  const [approveNow, setApproveNow] = useState(initial?.approveNow ?? false)
+
+  // autosave new-loan entries (sessionStorage: this tab only, cleared on sign-out)
+  const draft: CompleteDraft = { v: 1, step, values, borrowerId: borrower?.id ?? null, approveNow }
+  useAutosave(!editId && !saved, draft, () => saveDraft(draftKey, draft))
+
+  // Browser history can land on any step: send it to the nearest step whose data exists.
+  const formValid = parsed.success
+  useEffect(() => {
+    if (editId) return
+    if (step > 0 && !borrower && !preselectId) goStep('0', { replace: true })
+    else if (step >= 2 && !formValid) goStep('1', { replace: true })
+  }, [step, borrower, preselectId, formValid, editId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const startOver = () => {
+    clearDraft(draftKey)
+    form.reset(defaults)
+    setBorrower(null)
+    setApproveNow(false)
+    setRestored(false)
+    goStep('0', { replace: true, extra: { borrower: null } })
+  }
 
   if (editId && editLoan.isLoading) return <PageLoader />
   if (editId && editLoan.error) return <ErrorState error={editLoan.error} />
@@ -290,14 +346,24 @@ export default function LoanWizardPage() {
         title={editId ? `Edit loan ${editLoan.data?.loan_number ?? ''}` : 'New loan'}
         description={editId ? 'Editing returns the loan to draft and voids any unsigned agreement.' : 'Create a loan in four guided steps. Figures are calculated and validated on the server.'}
         back={<button onClick={() => navigate(-1)} className="mb-2 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" /> Back</button>}
-        actions={editLoan.data && <LoanStatusBadge status={editLoan.data.status} />}
+        actions={editLoan.data ? <LoanStatusBadge status={editLoan.data.status} />
+          : !editId && (step > 0 || borrower) && <Button variant="ghost" size="sm" onClick={startOver}><RotateCcw /> Start over</Button>}
       />
+
+      {restored && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm text-blue-900">
+          <History className="size-4" />
+          <span className="flex-1">Your unsaved loan entries were restored.</span>
+          <Button variant="outline" size="sm" onClick={startOver}>Start over</Button>
+          <Button variant="ghost" size="sm" onClick={() => setRestored(false)}>Dismiss</Button>
+        </div>
+      )}
 
       {/* stepper */}
       <ol className="mb-5 grid grid-cols-4 gap-2">
         {STEPS.map((s, i) => (
           <li key={s}>
-            <button type="button" disabled={i > step || (i === 0 && !!editId)} onClick={() => setStep(i)}
+            <button type="button" disabled={i > step || (i === 0 && !!editId)} onClick={() => (i < step ? backTo(i) : setStep(i))}
               className={cn('flex w-full flex-col gap-1.5 text-left disabled:cursor-default')}>
               <span className={cn('h-1.5 rounded-full', i <= step ? 'bg-[#2563EB]' : 'bg-slate-200')} />
               <span className={cn('flex items-center gap-1.5 text-xs font-medium', i === step ? 'text-[#142B4A]' : 'text-muted-foreground')}>
@@ -320,7 +386,7 @@ export default function LoanWizardPage() {
             <p className="truncate text-sm font-semibold">{borrower.full_name}</p>
             <p className="text-xs text-muted-foreground">{borrower.borrower_code} · {phMobile(borrower.mobile_number)}</p>
           </div>
-          {!editId && <Button variant="ghost" size="sm" onClick={() => setStep(0)}><Pencil /> Change</Button>}
+          {!editId && <Button variant="ghost" size="sm" onClick={() => backTo(0)}><Pencil /> Change</Button>}
         </div>
       )}
 
@@ -483,7 +549,7 @@ export default function LoanWizardPage() {
             </Collapsible>
 
             <div className="sticky bottom-20 z-10 flex gap-2 rounded-xl border bg-white/95 p-3 shadow-lg backdrop-blur lg:bottom-4">
-              {!editId && <Button type="button" variant="outline" className="h-12" onClick={() => setStep(0)}><ArrowLeft /> Back</Button>}
+              {!editId && <Button type="button" variant="outline" className="h-12" onClick={() => backTo(0)}><ArrowLeft /> Back</Button>}
               <Button type="submit" className="h-12 flex-1 bg-[#2563EB] text-base font-semibold hover:bg-[#1d4ed8]">
                 <Calculator className="size-5" /> PREVIEW LOAN
               </Button>
@@ -526,7 +592,7 @@ export default function LoanWizardPage() {
                 <ScheduleTable rows={preview.data.schedule} maxHeight={520} />
               </Panel>
               <div className="sticky bottom-20 z-10 flex flex-wrap gap-2 rounded-xl border bg-white/95 p-3 shadow-lg backdrop-blur lg:bottom-4">
-                <Button variant="outline" className="h-12" onClick={() => setStep(1)}><Pencil /> Edit loan details</Button>
+                <Button variant="outline" className="h-12" onClick={() => backTo(1)}><Pencil /> Edit loan details</Button>
                 <Button className="h-12 flex-1" onClick={() => setStep(3)} disabled={!previewFresh}>Continue to agreement <ArrowRight /></Button>
               </div>
             </>
@@ -608,7 +674,7 @@ export default function LoanWizardPage() {
                     {save.isPending && save.variables === 'draft' && <Spinner />} Save as draft
                   </Button>
                 </div>
-                <Button variant="link" className="w-full" onClick={() => setStep(2)}><ArrowLeft /> Back to preview</Button>
+                <Button variant="link" className="w-full" onClick={() => backTo(2)}><ArrowLeft /> Back to preview</Button>
               </div>
             </Panel>
           </aside>

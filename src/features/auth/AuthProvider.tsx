@@ -3,6 +3,7 @@ import type { Session } from '@supabase/supabase-js'
 import { useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { orgService } from '@/services/org'
+import { clearAllDrafts } from '@/features/loans/wizard'
 import type { Access, Organization, Settings } from '@/types/db'
 
 type AuthState = {
@@ -66,6 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(s)
       if (event === 'SIGNED_OUT') {
         qc.clear()
+        clearAllDrafts() // unsaved loan drafts contain borrower details
         void loadAccess(null)
       } else if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && s && loadedFor.current !== s.user.id) {
         setLoading(true)

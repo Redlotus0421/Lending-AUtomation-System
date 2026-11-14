@@ -2,15 +2,15 @@
 // (set by the platform administrator) decides that this page is used; staff never pick the mode.
 // Every figure — rate, fees, outstanding balances, deductions — is computed by the database.
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { useForm, type UseFormReturn } from 'react-hook-form'
+import { Link, useNavigate } from 'react-router-dom'
+import { useForm, useWatch, type UseFormReturn } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   AlertTriangle, ArrowLeft, ArrowRight, Banknote, Check, CheckCircle2, ClipboardCheck, CreditCard, FileSignature, History, IdCard,
-  Info, Lock, PenLine, RefreshCw, Search, ShieldCheck, Smartphone, UserPlus, Users,
+  Info, Lock, PenLine, RefreshCw, RotateCcw, Search, ShieldCheck, Smartphone, UserPlus, Users,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -35,6 +35,7 @@ import { cn } from '@/lib/utils'
 import type { Borrower, SimplifiedBorrowerStatus, SimplifiedPreview } from '@/types/db'
 import { ScheduleTable } from '../LoanPreview'
 import { ReleaseDialog } from '../LoanActions'
+import { clearDraft, draftFiles, loadDraft, saveDraft, useAutosave, useWizardSteps } from '../wizard'
 import { NetReleaseTable, paymentLabel, termUnit } from './shared'
 
 type StepKey = 'type' | 'borrower' | 'search' | 'balance' | 'loan' | 'review' | 'agreement'
@@ -67,46 +68,95 @@ const borrowerSchema = z.object({
 type BorrowerDraft = z.infer<typeof borrowerSchema>
 type Files = { photo: File | null; id: File | null; atm: File | null }
 
+/** Preview URL for a picked file; created and revoked in the same effect so it survives remounts. */
 function useObjectUrl(file: File | null) {
-  const url = useMemo(() => (file ? URL.createObjectURL(file) : null), [file])
-  useEffect(() => () => { if (url) URL.revokeObjectURL(url) }, [url])
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    if (!file) { setUrl(null); return }
+    const u = URL.createObjectURL(file)
+    setUrl(u)
+    return () => URL.revokeObjectURL(u)
+  }, [file])
   return url
 }
 
+type SimplifiedDraft = {
+  v: 1
+  step: StepKey
+  type: TransactionType | null
+  borrower: BorrowerDraft
+  borrowerId: string | null
+  principal: string
+  term: string
+  rate: string
+  createdBorrowerId: string | null
+  uploadsDone: boolean
+  created: SimplifiedLoanResult | null
+  agreementId: string | null
+}
+const EMPTY_BORROWER: BorrowerDraft = {
+  first_name: '', middle_name: '', last_name: '', address: '', mobile: '', employer: '', id_type: '', id_number: '',
+  co_name: '', co_relationship: '', co_mobile: '', co_address: '',
+}
+const NO_FILES: Files = { photo: null, id: null, atm: null }
+
 export default function SimplifiedLoanPage() {
   const navigate = useNavigate()
-  const [params] = useSearchParams()
-  const { settings, can } = useAuth()
-  const [type, setType] = useState<TransactionType | null>(null)
-  const [step, setStep] = useState<StepKey>('type')
+  const { settings, can, access } = useAuth()
+  const { step, go, back, params } = useWizardSteps<StepKey>('type')
+  const type = (params.get('type') as TransactionType | null) ?? null
+  const draftKey = `simplified:${access?.user_id ?? 'anon'}`
+
+  // Restore saved entries once. A "Reloan" link for a specific borrower starts fresh unless the
+  // saved draft is for that same borrower.
+  const [initial] = useState<SimplifiedDraft | null>(() => {
+    const d = loadDraft<SimplifiedDraft>(draftKey)
+    if (!d || d.v !== 1) return null
+    const linked = params.get('borrower')
+    if (linked && d.borrowerId && d.borrowerId !== linked && !params.get('step')) {
+      clearDraft(draftKey)
+      return null
+    }
+    return d
+  })
+  const [restored, setRestored] = useState(!!initial && initial.step !== 'type')
 
   // new borrower
   const form = useForm<BorrowerDraft>({
     resolver: zodResolver(borrowerSchema),
     mode: 'onTouched',
-    defaultValues: { first_name: '', middle_name: '', last_name: '', address: '', mobile: '', employer: '', id_type: '', id_number: '', co_name: '', co_relationship: '', co_mobile: '', co_address: '' },
+    defaultValues: initial?.borrower ?? EMPTY_BORROWER,
   })
-  const [files, setFiles] = useState<Files>({ photo: null, id: null, atm: null })
+  const [files, setFilesState] = useState<Files>(() => draftFiles.get<Files>(draftKey) ?? NO_FILES)
+  const setFiles: React.Dispatch<React.SetStateAction<Files>> = (u) => setFilesState((prev) => {
+    const next = typeof u === 'function' ? u(prev) : u
+    draftFiles.set(draftKey, next)
+    return next
+  })
   const [fileErrors, setFileErrors] = useState<Partial<Record<keyof Files, string>>>({})
-  const [createdBorrowerId, setCreatedBorrowerId] = useState<string | null>(null)
-  const [uploadsDone, setUploadsDone] = useState(false)
+  const [createdBorrowerId, setCreatedBorrowerId] = useState<string | null>(initial?.createdBorrowerId ?? null)
+  const [uploadsDone, setUploadsDone] = useState(initial?.uploadsDone ?? false)
 
   // renewal borrower
-  const [borrowerId, setBorrowerId] = useState<string | null>(params.get('borrower'))
+  const [borrowerId, setBorrowerId] = useState<string | null>(initial?.borrowerId ?? params.get('borrower'))
 
   // loan
-  const [principal, setPrincipal] = useState('')
-  const [term, setTerm] = useState(String(settings?.simplified?.default_term ?? 6))
-  const [rate, setRate] = useState(String(settings?.interest.default_rate ?? ''))
-  const [created, setCreated] = useState<SimplifiedLoanResult | null>(null)
-  const [agreementId, setAgreementId] = useState<string | null>(null)
+  const [principal, setPrincipal] = useState(initial?.principal ?? '')
+  const [term, setTerm] = useState(initial?.term ?? String(settings?.simplified?.default_term ?? 6))
+  const [rate, setRate] = useState(initial?.rate ?? String(settings?.interest.default_rate ?? ''))
+  const [created, setCreated] = useState<SimplifiedLoanResult | null>(initial?.created ?? null)
+  const [agreementId, setAgreementId] = useState<string | null>(initial?.agreementId ?? null)
 
+  // entry point: resume a saved draft, or open a "Reloan" link on the balance step
   useEffect(() => {
-    if (params.get('borrower')) {
-      setType('renewal')
-      setStep('balance')
+    if (params.get('step')) return
+    if (initial && initial.step !== 'type' && initial.type) {
+      go(initial.step, { replace: true, extra: { type: initial.type } })
+    } else if (params.get('borrower')) {
+      go('balance', { replace: true, extra: { type: 'renewal' } })
     }
-  }, [params])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (settings) {
       setTerm((t) => t || String(settings.simplified?.default_term ?? 6))
@@ -114,13 +164,35 @@ export default function SimplifiedLoanPage() {
     }
   }, [settings])
 
+  // autosave everything typed so far (sessionStorage: this tab only, cleared on sign-out)
+  const borrowerValues = useWatch({ control: form.control }) as BorrowerDraft
+  const draft: SimplifiedDraft = {
+    v: 1, step, type, borrower: { ...EMPTY_BORROWER, ...borrowerValues }, borrowerId, principal, term, rate,
+    createdBorrowerId, uploadsDone, created, agreementId,
+  }
+  const [finished, setFinished] = useState(false)
+  useAutosave(!finished, draft, () => saveDraft(draftKey, draft))
+
+  const startOver = () => {
+    clearDraft(draftKey)
+    form.reset(EMPTY_BORROWER)
+    setFilesState(NO_FILES)
+    setFileErrors({})
+    setCreatedBorrowerId(null)
+    setUploadsDone(false)
+    setBorrowerId(null)
+    setPrincipal('')
+    setTerm(String(settings?.simplified?.default_term ?? 6))
+    setRate(String(settings?.interest.default_rate ?? ''))
+    setCreated(null)
+    setAgreementId(null)
+    setRestored(false)
+    go('type', { replace: true, extra: { type: null, borrower: null } })
+  }
+
   const steps = type ? STEPS[type] : STEPS.new.slice(0, 1)
   const stepIndex = steps.findIndex((s) => s.key === step)
   const locked = !!created // once the loan exists, earlier steps are read-only
-  const go = (k: StepKey) => {
-    setStep(k)
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
 
   const status = useQuery({
     queryKey: ['simplified', 'borrower-status', borrowerId],
@@ -144,6 +216,19 @@ export default function SimplifiedLoanPage() {
     }
   }, [type, principal, term, rate, borrowerId, allowOverride])
 
+  // Browser history can land on any step: send it to the nearest step whose data exists.
+  useEffect(() => {
+    const fix = (k: StepKey) => go(k, { replace: true })
+    if (created && step !== 'agreement') return fix('agreement')
+    if (step === 'type') return
+    if (!type) return fix('type')
+    if (!steps.some((s) => s.key === step)) return fix(type === 'new' ? 'borrower' : 'search')
+    if (step === 'balance' && !borrowerId) return fix('search')
+    if ((step === 'loan' || step === 'review') && type === 'renewal' && !borrowerId) return fix('search')
+    if (step === 'review' && !input) return fix('loan')
+    if (step === 'agreement' && !created) return fix(input ? 'review' : 'loan')
+  }, [step, type, created, borrowerId, input]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const debounced = useDebounced(input ? JSON.stringify(input) : null, 400)
   const preview = useQuery({
     queryKey: ['simplified', 'preview', debounced],
@@ -156,7 +241,7 @@ export default function SimplifiedLoanPage() {
 
   const borrowerName = type === 'renewal'
     ? status.data?.borrower.full_name ?? ''
-    : [form.getValues('first_name'), form.getValues('middle_name'), form.getValues('last_name')].filter((x) => x?.trim()).join(' ')
+    : [borrowerValues.first_name, borrowerValues.middle_name, borrowerValues.last_name].filter((x) => x?.trim()).join(' ')
 
   if (!settings) return <PageLoader />
 
@@ -166,13 +251,23 @@ export default function SimplifiedLoanPage() {
         title={type === 'renewal' ? 'Reloan / Renew' : type === 'new' ? 'New loan' : 'Create a loan'}
         description={<span className="inline-flex flex-wrap items-center gap-2">Simplified lending <Pill tone="teal" dot={false}>Rate {trimNumber(settings.interest.default_rate, 4)}% / {settings.interest.default_rate_period}</Pill> <span className="text-muted-foreground">Rates and fees follow your business settings; every figure is computed on the server.</span></span>}
         back={<button onClick={() => navigate(-1)} className="mb-2 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" /> Back</button>}
+        actions={step !== 'type' && !created && <Button variant="ghost" size="sm" onClick={startOver}><RotateCcw /> Start over</Button>}
       />
+
+      {restored && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm text-blue-900">
+          <History className="size-4" />
+          <span className="flex-1">{created ? `Resumed loan ${created.loan_number} where you left off.` : 'Your unsaved entries were restored.'}{!created && type === 'new' && !files.photo && !files.id && !files.atm && (initial?.borrower.first_name ?? '') !== '' ? ' Attached files are not kept after a page reload — check the photo, ID and ATM card.' : ''}</span>
+          {!created && <Button variant="outline" size="sm" onClick={startOver}>Start over</Button>}
+          <Button variant="ghost" size="sm" onClick={() => setRestored(false)}>Dismiss</Button>
+        </div>
+      )}
 
       {type && (
         <ol className={cn('mb-5 grid gap-2', type === 'new' ? 'grid-cols-5' : 'grid-cols-6')}>
           {steps.map((s, i) => (
             <li key={s.key}>
-              <button type="button" disabled={i > stepIndex || (locked && s.key !== 'agreement')} onClick={() => go(s.key)}
+              <button type="button" disabled={i > stepIndex || (locked && s.key !== 'agreement')} onClick={() => i < stepIndex ? back(s.key) : go(s.key)}
                 className="flex w-full flex-col gap-1.5 text-left disabled:cursor-default">
                 <span className={cn('h-1.5 rounded-full', i <= stepIndex ? 'bg-[#2563EB]' : 'bg-slate-200')} />
                 <span className={cn('flex items-center gap-1.5 text-xs font-medium', i === stepIndex ? 'text-[#142B4A]' : 'text-muted-foreground')}>
@@ -193,34 +288,33 @@ export default function SimplifiedLoanPage() {
             toast.error('Registering a new borrower needs permission to create borrowers and handle identity documents.')
             return
           }
-          setType(t)
-          go(t === 'new' ? 'borrower' : borrowerId ? 'balance' : 'search')
+          go(t === 'new' ? 'borrower' : borrowerId ? 'balance' : 'search', { extra: { type: t } })
         }} />
       )}
 
       {step === 'borrower' && type === 'new' && (
         <NewBorrowerStep form={form} files={files} setFiles={setFiles} fileErrors={fileErrors} setFileErrors={setFileErrors}
-          onBack={() => go('type')}
-          onRenewInstead={(id) => { setBorrowerId(id); setType('renewal'); go('balance') }}
+          onBack={() => back('type')}
+          onRenewInstead={(id) => { setBorrowerId(id); go('balance', { extra: { type: 'renewal' } }) }}
           onNext={() => go('loan')} />
       )}
 
       {step === 'search' && type === 'renewal' && (
-        <SearchStep selected={borrowerId} onBack={() => go('type')}
+        <SearchStep selected={borrowerId} onBack={() => back('type')}
           onSelect={(b) => { setBorrowerId(b.id); go('balance') }} />
       )}
 
       {step === 'balance' && type === 'renewal' && (
         status.isLoading ? <PageLoader label="Checking outstanding balance…" /> :
         status.error ? <ErrorState error={status.error} onRetry={() => void status.refetch()} /> :
-        status.data && <BalanceStep data={status.data} onBack={() => go('search')} onNext={() => go('loan')} />
+        status.data && <BalanceStep data={status.data} onBack={() => back('search')} onNext={() => go('loan')} />
       )}
 
       {step === 'loan' && type && (
         <LoanStep type={type} principal={principal} setPrincipal={setPrincipal} term={term} setTerm={setTerm} rate={rate} setRate={setRate}
           allowOverride={allowOverride} borrowerName={borrowerName} preview={preview.data} previewError={input ? preview.error : null}
           fetching={preview.isFetching} fresh={previewFresh}
-          onBack={() => go(type === 'new' ? 'borrower' : 'balance')}
+          onBack={() => back(type === 'new' ? 'borrower' : 'balance')}
           onNext={() => {
             if (!input) return toast.error('Enter the loan amount and a whole-number duration')
             if (preview.error) return toast.error(errorMessage(preview.error))
@@ -232,8 +326,12 @@ export default function SimplifiedLoanPage() {
         <ReviewStep type={type} input={input} preview={preview.data} fresh={previewFresh} fetching={preview.isFetching}
           refetch={() => void preview.refetch()}
           draft={type === 'new' ? form.getValues() : null} files={files} status={status.data ?? null}
-          onBack={() => go('loan')}
+          onBack={() => back('loan')}
           finalize={async () => {
+            if (type === 'new' && (!files.photo || !files.id || !files.atm) && !uploadsDone) {
+              back('borrower')
+              throw new Error('Re-attach the borrower photo, ID and ATM card before saving.')
+            }
             // 1. register the borrower once (retries reuse the record), then the documents
             let bid = type === 'renewal' ? borrowerId! : createdBorrowerId
             if (type === 'new') {
@@ -281,7 +379,8 @@ export default function SimplifiedLoanPage() {
 
       {step === 'agreement' && created && (
         agreementId
-          ? <AgreementStep loan={created} agreementId={agreementId} borrowerName={borrowerName} />
+          ? <AgreementStep loan={created} agreementId={agreementId} borrowerName={borrowerName}
+              onFinished={() => { setFinished(true); clearDraft(draftKey) }} />
           : <RetryAgreement loan={created} onDone={(id) => setAgreementId(id)} />
       )}
     </div>
@@ -645,7 +744,7 @@ function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate,
                 <Input type="number" inputMode="decimal" step="0.0001" className="h-12 pr-28 text-lg" value={rate} readOnly={!allowOverride}
                   onChange={(e) => setRate(e.target.value)} />
                 <span className="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1 text-xs text-muted-foreground">
-                  {!allowOverride && <Lock className="size-3.5" />} per {settings?.interest.default_rate_period}
+                  {!allowOverride && <Lock className="size-3.5" />} per {({ daily: 'day', weekly: 'week', monthly: 'month', yearly: 'year' } as Record<string, string>)[settings?.interest.default_rate_period ?? 'monthly']}
                 </span>
               </div>
             </Field>
@@ -846,7 +945,7 @@ function RetryAgreement({ loan, onDone }: { loan: SimplifiedLoanResult; onDone: 
   )
 }
 
-function AgreementStep({ loan, agreementId, borrowerName }: { loan: SimplifiedLoanResult; agreementId: string; borrowerName: string }) {
+function AgreementStep({ loan, agreementId, borrowerName, onFinished }: { loan: SimplifiedLoanResult; agreementId: string; borrowerName: string; onFinished: () => void }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const { can, access } = useAuth()
@@ -857,6 +956,8 @@ function AgreementStep({ loan, agreementId, borrowerName }: { loan: SimplifiedLo
   const pdf = useQuery({ queryKey: ['agreement', agreementId, 'pdf', pdfPath], queryFn: () => agreementsService.pdfUrl(pdfPath!), enabled: !!pdfPath })
   const loanView = useQuery({ queryKey: ['loan', loan.id], queryFn: () => loansService.get(loan.id) })
   const [releaseOpen, setReleaseOpen] = useState(false)
+  const fullySigned = agreement.data?.status === 'fully_signed'
+  useEffect(() => { if (fullySigned) onFinished() }, [fullySigned]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (agreement.isLoading || signatures.isLoading) return <PageLoader label="Preparing the agreement…" />
   if (agreement.error || !a) return <ErrorState error={agreement.error ?? 'Agreement not found'} onRetry={() => void agreement.refetch()} />
