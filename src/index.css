@@ -1,0 +1,219 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  LendFlow design tokens
+  Primary  Deep Navy  #142B4A
+  Secondary Blue      #2563EB
+  Accent   Teal       #14B8A6
+  Background          #F5F7FB
+*/
+:root {
+  --radius: 0.75rem;
+
+  --background: #f5f7fb;
+  --foreground: #0f1b2d;
+  --card: #ffffff;
+  --card-foreground: #0f1b2d;
+  --popover: #ffffff;
+  --popover-foreground: #0f1b2d;
+
+  --primary: #142b4a;
+  --primary-foreground: #ffffff;
+  --secondary: #eef2f8;
+  --secondary-foreground: #142b4a;
+  --muted: #f1f4f9;
+  --muted-foreground: #5b6b82;
+  --accent: #eaf1fe;
+  --accent-foreground: #142b4a;
+  --destructive: #dc2626;
+  --border: #e3e8f0;
+  --input: #d9e0ea;
+  --ring: #2563eb;
+
+  --brand-navy: #142b4a;
+  --brand-blue: #2563eb;
+  --brand-teal: #14b8a6;
+  --success: #16a34a;
+  --warning: #f59e0b;
+  --danger: #dc2626;
+
+  --chart-1: #2563eb;
+  --chart-2: #14b8a6;
+  --chart-3: #142b4a;
+  --chart-4: #f59e0b;
+  --chart-5: #94a3b8;
+
+  --sidebar: #142b4a;
+  --sidebar-foreground: #c9d5e6;
+  --sidebar-primary: #14b8a6;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1d3a60;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #21406a;
+  --sidebar-ring: #14b8a6;
+}
+
+@theme inline {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-navy: var(--brand-navy);
+  --color-brand: var(--brand-blue);
+  --color-teal: var(--brand-teal);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --shadow-card: 0 1px 2px rgba(16, 32, 64, 0.04), 0 4px 16px rgba(16, 32, 64, 0.05);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer utilities {
+  .shadow-card {
+    box-shadow: var(--shadow-card);
+  }
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+}
+
+/* Legal document preview styling (agreement template preview) */
+.legal-doc {
+  font-family: var(--font-serif);
+  color: #111827;
+  line-height: 1.6;
+}
+.legal-doc h1 {
+  font-size: 1.35rem;
+  font-weight: 600;
+  text-align: center;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 0.5rem 0 1rem;
+}
+.legal-doc h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 1.1rem 0 0.4rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.legal-doc h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0.8rem 0 0.3rem;
+}
+.legal-doc p {
+  margin: 0.45rem 0;
+  text-align: justify;
+}
+.legal-doc ul,
+.legal-doc ol {
+  margin: 0.4rem 0 0.4rem 1.4rem;
+}
+.legal-doc ul {
+  list-style: disc;
+}
+.legal-doc ol {
+  list-style: decimal;
+}
+.legal-doc table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  margin: 0.6rem 0;
+}
+.legal-doc th,
+.legal-doc td {
+  border: 1px solid #cbd5e1;
+  padding: 0.25rem 0.4rem;
+  text-align: right;
+}
+.legal-doc th {
+  background: #f1f5f9;
+  font-weight: 600;
+}
+.legal-doc hr {
+  margin: 1rem 0;
+  border-color: #cbd5e1;
+}
+.legal-doc .ph-missing {
+  background: #fef3c7;
+  color: #92400e;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+@media print {
+  body {
+    background: #fff !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-area {
+    box-shadow: none !important;
+    border: none !important;
+  }
+}
