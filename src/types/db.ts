@@ -5,7 +5,7 @@ export type LoanStatus =
   | 'fully_signed' | 'ready_for_release' | 'active' | 'rejected' | 'cancelled' | 'completed' | 'defaulted'
 export type InterestMethod = 'flat' | 'diminishing'
 export type RatePeriod = 'daily' | 'weekly' | 'monthly' | 'yearly'
-export type Frequency = 'daily' | 'weekly' | 'monthly'
+export type Frequency = 'daily' | 'weekly' | 'semimonthly' | 'monthly'
 export type Money = number | string
 /** Loan-creation workflow of a business, chosen by the platform administrator */
 export type LendingMode = 'complete' | 'simplified'

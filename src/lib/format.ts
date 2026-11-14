@@ -1,6 +1,6 @@
 // UI formatting helpers (screen uses the ₱ sign; documents use "PHP").
 export {
-  amountInWords, dateTimeManila, durationLabel, longDate, METHOD_LABEL, PERIOD_LABEL, PERIOD_PLURAL, shortDate,
+  amountInWords, dateTimeManila, durationLabel, FREQUENCY_LABEL, longDate, METHOD_LABEL, PERIOD_LABEL, PERIOD_PLURAL, shortDate,
   SIGNER_LABEL, todayManila, toNumber, trimNumber,
 } from '../../supabase/functions/_shared/format.ts'
 import { toNumber } from '../../supabase/functions/_shared/format.ts'

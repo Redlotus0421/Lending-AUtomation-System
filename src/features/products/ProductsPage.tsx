@@ -16,7 +16,7 @@ import { useAuth } from '@/features/auth/AuthProvider'
 import { productsService } from '@/services/loans'
 import { templatesService } from '@/services/agreements'
 import { FREQUENCIES, PENALTY_TYPES, RATE_PERIODS } from '@/lib/constants'
-import { METHOD_LABEL, peso, trimNumber } from '@/lib/format'
+import { FREQUENCY_LABEL, METHOD_LABEL, peso, trimNumber } from '@/lib/format'
 import { errorMessage } from '@/lib/errors'
 import type { LoanProduct } from '@/types/db'
 
@@ -38,7 +38,7 @@ const schema = z.object({
   interest_method: z.enum(['flat', 'diminishing']),
   interest_rate: num('Enter a rate between 0 and 100', { min: 0, max: 100 }).refine((v) => v !== '', 'Interest rate is required'),
   rate_period: z.enum(['daily', 'weekly', 'monthly', 'yearly']),
-  repayment_frequency: z.enum(['daily', 'weekly', 'monthly']),
+  repayment_frequency: z.enum(['daily', 'weekly', 'semimonthly', 'monthly']),
   min_amount: num('Enter a positive amount', { min: 0.01 }),
   max_amount: num('Enter a positive amount', { min: 0.01 }),
   min_term: num('Whole number ≥ 1', { min: 1, int: true }),
@@ -140,7 +140,7 @@ export default function ProductsPage() {
                 <p className="tabular text-2xl font-semibold text-[#142B4A]">
                   {trimNumber(p.interest_rate)}%<span className="text-sm font-normal text-muted-foreground"> {RATE_PERIODS.find((r) => r.value === p.rate_period)?.label}</span>
                 </p>
-                <p className="text-xs text-muted-foreground">{METHOD_LABEL[p.interest_method]} · paid {p.repayment_frequency}</p>
+                <p className="text-xs text-muted-foreground">{METHOD_LABEL[p.interest_method]} · paid {(FREQUENCY_LABEL[p.repayment_frequency] ?? p.repayment_frequency)}</p>
               </div>
               {p.description && <p className="mb-3 text-sm text-muted-foreground">{p.description}</p>}
               <KeyValue columns={2} items={[

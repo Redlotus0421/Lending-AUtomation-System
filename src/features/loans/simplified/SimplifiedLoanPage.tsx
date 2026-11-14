@@ -29,7 +29,8 @@ import { agreementsService } from '@/services/agreements'
 import { loansService } from '@/services/loans'
 import { simplifiedService, type SimplifiedLoanInput, type SimplifiedLoanResult, type TransactionType } from '@/services/simplified'
 import { PH_ID_TYPES, RELATIONSHIPS } from '@/lib/constants'
-import { fmtDate, initials, METHOD_LABEL, normalizePhMobile, peso, phMobile, toNumber, trimNumber } from '@/lib/format'
+import { fmtDate, FREQUENCY_LABEL, initials, METHOD_LABEL, normalizePhMobile, peso, phMobile, toNumber, trimNumber } from '@/lib/format'
+import { FREQUENCIES } from '@/lib/constants'
 import { errorMessage } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import type { Borrower, SimplifiedBorrowerStatus, SimplifiedPreview } from '@/types/db'
@@ -89,6 +90,7 @@ type SimplifiedDraft = {
   principal: string
   term: string
   rate: string
+  frequency?: string
   createdBorrowerId: string | null
   uploadsDone: boolean
   created: SimplifiedLoanResult | null
@@ -144,6 +146,7 @@ export default function SimplifiedLoanPage() {
   const [principal, setPrincipal] = useState(initial?.principal ?? '')
   const [term, setTerm] = useState(initial?.term ?? String(settings?.simplified?.default_term ?? 6))
   const [rate, setRate] = useState(initial?.rate ?? String(settings?.interest.default_rate ?? ''))
+  const [frequency, setFrequency] = useState<string>(initial?.frequency ?? settings?.repayment.default_frequency ?? 'monthly')
   const [created, setCreated] = useState<SimplifiedLoanResult | null>(initial?.created ?? null)
   const [agreementId, setAgreementId] = useState<string | null>(initial?.agreementId ?? null)
 
@@ -167,7 +170,7 @@ export default function SimplifiedLoanPage() {
   // autosave everything typed so far (sessionStorage: this tab only, cleared on sign-out)
   const borrowerValues = useWatch({ control: form.control }) as BorrowerDraft
   const draft: SimplifiedDraft = {
-    v: 1, step, type, borrower: { ...EMPTY_BORROWER, ...borrowerValues }, borrowerId, principal, term, rate,
+    v: 1, step, type, borrower: { ...EMPTY_BORROWER, ...borrowerValues }, borrowerId, principal, term, rate, frequency,
     createdBorrowerId, uploadsDone, created, agreementId,
   }
   const [finished, setFinished] = useState(false)
@@ -184,6 +187,7 @@ export default function SimplifiedLoanPage() {
     setPrincipal('')
     setTerm(String(settings?.simplified?.default_term ?? 6))
     setRate(String(settings?.interest.default_rate ?? ''))
+    setFrequency(settings?.repayment.default_frequency ?? 'monthly')
     setCreated(null)
     setAgreementId(null)
     setRestored(false)
@@ -212,9 +216,10 @@ export default function SimplifiedLoanPage() {
       borrower_id: type === 'renewal' ? borrowerId! : undefined,
       principal: Math.round(p * 100) / 100,
       term_count: t,
+      repayment_frequency: frequency,
       interest_rate: allowOverride && rate !== '' && Number.isFinite(r) ? r : null,
     }
-  }, [type, principal, term, rate, borrowerId, allowOverride])
+  }, [type, principal, term, rate, frequency, borrowerId, allowOverride])
 
   // Browser history can land on any step: send it to the nearest step whose data exists.
   useEffect(() => {
@@ -312,6 +317,7 @@ export default function SimplifiedLoanPage() {
 
       {step === 'loan' && type && (
         <LoanStep type={type} principal={principal} setPrincipal={setPrincipal} term={term} setTerm={setTerm} rate={rate} setRate={setRate}
+          frequency={frequency} setFrequency={setFrequency}
           allowOverride={allowOverride} borrowerName={borrowerName} preview={preview.data} previewError={input ? preview.error : null}
           fetching={preview.isFetching} fresh={previewFresh}
           onBack={() => back(type === 'new' ? 'borrower' : 'balance')}
@@ -711,11 +717,12 @@ function BalanceStep({ data, onBack, onNext }: { data: SimplifiedBorrowerStatus;
 }
 
 // ---------------------------------------------------------------------------
-function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate, allowOverride, borrowerName, preview, previewError, fetching, fresh, onBack, onNext }: {
+function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate, frequency, setFrequency, allowOverride, borrowerName, preview, previewError, fetching, fresh, onBack, onNext }: {
   type: TransactionType
   principal: string; setPrincipal: (v: string) => void
   term: string; setTerm: (v: string) => void
   rate: string; setRate: (v: string) => void
+  frequency: string; setFrequency: (v: string) => void
   allowOverride: boolean
   borrowerName: string
   preview: SimplifiedPreview | undefined
@@ -726,7 +733,9 @@ function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate,
   onNext: () => void
 }) {
   const { settings } = useAuth()
-  const freq = settings?.repayment.default_frequency ?? 'monthly'
+  const freq = frequency
+  const enabled = FREQUENCIES.filter((f) => settings?.repayment.frequencies.includes(f.value) || f.value === settings?.repayment.default_frequency)
+  const n = Number(term)
   const fee = settings?.simplified
   return (
     <div className="grid gap-5 lg:grid-cols-[1fr_400px]">
@@ -736,7 +745,22 @@ function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate,
             <Field label={type === 'renewal' ? 'New loan amount (₱)' : 'Loan amount (₱)'} required>
               <Input autoFocus type="number" inputMode="decimal" min="0" step="0.01" placeholder="20,000.00" className="h-12 text-lg" value={principal} onChange={(e) => setPrincipal(e.target.value)} />
             </Field>
-            <Field label={`Repayment term (${termUnit(freq)})`} required hint={`${settings?.repayment.default_frequency ?? 'monthly'} installments`}>
+            {enabled.length > 1 && (
+              <Field label="Collection / payment frequency" className="sm:col-span-2">
+                <div role="radiogroup" aria-label="Payment frequency" className="flex flex-wrap gap-2">
+                  {enabled.map((f) => (
+                    <button key={f.value} type="button" role="radio" aria-checked={freq === f.value} onClick={() => setFrequency(f.value)}
+                      className={cn('h-11 rounded-lg border-2 px-4 text-sm font-medium transition', freq === f.value ? 'border-[#2563EB] bg-blue-50 text-[#142B4A]' : 'border-slate-200 hover:border-slate-300')}>
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+            )}
+            <Field label={freq === 'semimonthly' ? 'Number of payments (twice a month)' : `Repayment term (${termUnit(freq)})`} required
+              hint={freq === 'semimonthly'
+                ? (Number.isInteger(n) && n > 0 ? `${n} payments = ${trimNumber(n / 2)} month${n === 2 ? '' : 's'} (e.g. 15th and 30th)` : 'Two payments per month, e.g. 15th and 30th')
+                : `${FREQUENCY_LABEL[freq] ?? freq} installments`}>
               <Input type="number" inputMode="numeric" min={1} step={1} className="h-12 text-lg" value={term} onChange={(e) => setTerm(e.target.value)} />
             </Field>
             <Field label="Interest rate (%)" hint={allowOverride ? 'Prefilled from your business settings; your settings allow changing it.' : 'Fixed by your business settings'}>
@@ -791,7 +815,7 @@ function ComputationFigures({ p }: { p: SimplifiedPreview }) {
     ['Fees & charges', toNumber(s.total_charges) > 0 ? `${peso(s.total_charges)} (${s.charges_treatment === 'added' ? 'added to installments' : 'deducted'})` : 'None'],
     ['Total repayment amount', peso(s.total_repayment)],
     ['Repayment duration', s.duration_label],
-    ['Payment schedule', `${s.installment_count} ${s.repayment_frequency} payments · ${fmtDate(s.first_due_date)} – ${fmtDate(s.last_due_date)}`],
+    ['Payment schedule', `${s.installment_count} ${FREQUENCY_LABEL[s.repayment_frequency] ?? s.repayment_frequency} payments · ${fmtDate(s.first_due_date)} – ${fmtDate(s.last_due_date)}`],
   ]
   return (
     <div className="space-y-3">
@@ -902,7 +926,7 @@ function ReviewStep({ type, preview, fresh, fetching, refetch, draft, files, sta
           )}
         </Panel>
 
-        <Panel title="Payment schedule" description={`${preview.schedule.length} ${s.repayment_frequency} payments`}>
+        <Panel title="Payment schedule" description={`${preview.schedule.length} ${(FREQUENCY_LABEL[s.repayment_frequency] ?? s.repayment_frequency)} payments`}>
           <ScheduleTable rows={preview.schedule} maxHeight={360} />
         </Panel>
       </div>

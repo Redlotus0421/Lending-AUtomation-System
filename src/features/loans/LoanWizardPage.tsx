@@ -23,7 +23,7 @@ import { loansService, productsService, type LoanInput } from '@/services/loans'
 import { agreementsService, templatesService } from '@/services/agreements'
 import { usersService } from '@/services/org'
 import { FREQUENCIES, PENALTY_TYPES, RATE_PERIODS } from '@/lib/constants'
-import { addDays, addMonths, fmtDate, initials, peso, phMobile, todayManila, toNumber } from '@/lib/format'
+import { addDays, addMonths, fmtDate, FREQUENCY_LABEL, initials, peso, phMobile, todayManila, toNumber } from '@/lib/format'
 import { errorMessage } from '@/lib/errors'
 import { cn } from '@/lib/utils'
 import type { Borrower, LoanProduct } from '@/types/db'
@@ -38,7 +38,7 @@ const schema = z.object({
   interest_method: z.enum(['flat', 'diminishing']),
   interest_rate: num('Enter the interest rate').pipe(z.number().min(0, 'Rate cannot be negative').max(100, 'Rate is too high')),
   rate_period: z.enum(['daily', 'weekly', 'monthly', 'yearly']),
-  repayment_frequency: z.enum(['daily', 'weekly', 'monthly']),
+  repayment_frequency: z.enum(['daily', 'weekly', 'semimonthly', 'monthly']),
   term_count: num('Enter the duration').pipe(z.number().int('Use whole numbers').min(1, 'At least 1').max(3660, 'Too long')),
   release_date: z.string().min(10, 'Select the release date'),
   first_due_date: z.string(),
@@ -270,7 +270,7 @@ export default function LoanWizardPage() {
   const unit = FREQUENCIES.find((f) => f.value === values.repayment_frequency)?.unit ?? 'installments'
   const autoFirstDue = values.release_date
     ? values.repayment_frequency === 'monthly' ? addMonths(values.release_date, 1)
-      : addDays(values.release_date, values.repayment_frequency === 'weekly' ? 7 : 1)
+      : addDays(values.release_date, values.repayment_frequency === 'semimonthly' ? 15 : values.repayment_frequency === 'weekly' ? 7 : 1)
     : ''
 
   const save = useMutation({
@@ -455,7 +455,7 @@ export default function LoanWizardPage() {
                   </NativeSelect>
                 </Field>
                 <Field label={`Repayment duration (${unit})`} required error={errors.term_count?.message}
-                  hint={values.term_count > 0 ? `${values.term_count} ${values.repayment_frequency} installments` : undefined}>
+                  hint={values.term_count > 0 ? `${values.term_count} ${(FREQUENCY_LABEL[values.repayment_frequency] ?? values.repayment_frequency)} installments` : undefined}>
                   <Input type="number" inputMode="numeric" min={1} className="h-11" {...register('term_count', { valueAsNumber: true })} />
                 </Field>
                 <Field label="Loan release date" required error={errors.release_date?.message}>

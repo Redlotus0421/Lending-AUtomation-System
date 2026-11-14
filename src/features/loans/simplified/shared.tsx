@@ -6,11 +6,11 @@ import type { Frequency, Money } from '@/types/db'
 
 /** "Monthly payment", "Weekly payment", … */
 export function paymentLabel(freq: Frequency | string | undefined) {
-  return freq === 'weekly' ? 'Weekly payment' : freq === 'daily' ? 'Daily payment' : 'Monthly payment'
+  return freq === 'semimonthly' ? 'Semi-monthly payment' : freq === 'weekly' ? 'Weekly payment' : freq === 'daily' ? 'Daily payment' : 'Monthly payment'
 }
 
 export function termUnit(freq: Frequency | string | undefined, n = 2) {
-  const one = freq === 'weekly' ? 'week' : freq === 'daily' ? 'day' : 'month'
+  const one = freq === 'semimonthly' ? 'payment' : freq === 'weekly' ? 'week' : freq === 'daily' ? 'day' : 'month'
   return n === 1 ? one : `${one}s`
 }
 

@@ -11,7 +11,7 @@ import { PdfViewer } from '@/components/common/PdfViewer'
 import { SignaturePad, type SignaturePadHandle } from '@/components/common/SignaturePad'
 import { publicSigning, type PublicSigningContext } from '@/services/agreements'
 import { errorMessage } from '@/lib/errors'
-import { fmtDate, fmtDateTime, METHOD_LABEL, peso, PERIOD_LABEL, SIGNER_LABEL, trimNumber } from '@/lib/format'
+import { fmtDate, fmtDateTime, FREQUENCY_LABEL, METHOD_LABEL, peso, PERIOD_LABEL, SIGNER_LABEL, trimNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 type Step = 'review' | 'consent' | 'sign' | 'done'
@@ -219,7 +219,7 @@ function Review({ ctx, onNext }: { ctx: PublicSigningContext; onNext: () => void
       <div className="rounded-2xl border bg-white p-5 shadow-card">
         <div className="rounded-xl bg-[#142B4A] p-4 text-white">
           <p className="text-xs uppercase tracking-wide text-white/60">You will pay</p>
-          <p className="tabular text-2xl font-semibold">{peso(l.installment_amount)} <span className="text-sm font-normal text-white/70">× {l.installment_count} {l.repayment_frequency}</span></p>
+          <p className="tabular text-2xl font-semibold">{peso(l.installment_amount)} <span className="text-sm font-normal text-white/70">× {l.installment_count} {FREQUENCY_LABEL[l.repayment_frequency] ?? l.repayment_frequency}</span></p>
           <p className="text-xs text-white/70">From {fmtDate(l.first_due_date)} to {fmtDate(l.last_due_date)}</p>
         </div>
         <div className="mt-3 divide-y">

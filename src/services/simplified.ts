@@ -12,6 +12,8 @@ export type SimplifiedLoanInput = {
   borrower_id?: string
   principal: number
   term_count: number
+  /** one of the frequencies enabled in the business settings; defaults to the business default */
+  repayment_frequency?: string
   interest_rate?: number | null
   purpose?: string | null
 }

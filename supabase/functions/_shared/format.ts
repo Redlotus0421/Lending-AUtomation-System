@@ -107,9 +107,9 @@ export function amountInWords(v: unknown): string {
   return centavos ? `${w} and ${String(centavos).padStart(2, '0')}/100` : w
 }
 
-export const FREQUENCY_LABEL: Record<string, string> = { daily: 'daily', weekly: 'weekly', monthly: 'monthly' }
-export const PERIOD_LABEL: Record<string, string> = { daily: 'day', weekly: 'week', monthly: 'month', yearly: 'year' }
-export const PERIOD_PLURAL: Record<string, string> = { daily: 'days', weekly: 'weeks', monthly: 'months', yearly: 'years' }
+export const FREQUENCY_LABEL: Record<string, string> = { daily: 'daily', weekly: 'weekly', semimonthly: 'semi-monthly', monthly: 'monthly' }
+export const PERIOD_LABEL: Record<string, string> = { daily: 'day', weekly: 'week', semimonthly: 'half-month', monthly: 'month', yearly: 'year' }
+export const PERIOD_PLURAL: Record<string, string> = { daily: 'days', weekly: 'weeks', semimonthly: 'half-months', monthly: 'months', yearly: 'years' }
 export const METHOD_LABEL: Record<string, string> = { flat: 'Flat interest', diminishing: 'Diminishing balance' }
 
 export const SIGNER_LABEL: Record<string, string> = {
@@ -117,6 +117,10 @@ export const SIGNER_LABEL: Record<string, string> = {
 }
 
 export function durationLabel(count: number, frequency: string): string {
+  if (frequency === 'semimonthly') {
+    const months = count / 2
+    return `${count} semi-monthly payment${count === 1 ? '' : 's'} (${trimNumber(months)} month${months === 1 ? '' : 's'})`
+  }
   const unit = count === 1 ? PERIOD_LABEL[frequency] : PERIOD_PLURAL[frequency]
   return `${count} ${unit}`
 }

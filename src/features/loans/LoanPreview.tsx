@@ -1,6 +1,6 @@
 import { AlertTriangle, Info } from 'lucide-react'
 import type { LoanCalculation, ScheduleRow } from '@/types/db'
-import { fmtDate, METHOD_LABEL, num, PERIOD_LABEL, peso, pct, toNumber, trimNumber } from '@/lib/format'
+import { fmtDate, FREQUENCY_LABEL, METHOD_LABEL, num, PERIOD_LABEL, peso, pct, toNumber, trimNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 export function rateLabel(rate: unknown, period: string) {
@@ -13,7 +13,7 @@ export function SummaryGrid({ calc, compact }: { calc: LoanCalculation; compact?
     ['Principal', peso(s.principal)],
     ['Interest method', METHOD_LABEL[s.interest_method]],
     ['Interest rate', rateLabel(s.interest_rate, s.rate_period), `${trimNumber(s.annual_nominal_rate, 2)}% p.a. nominal`],
-    ['Duration', s.duration_label, `${s.repayment_frequency} payments`],
+    ['Duration', s.duration_label, `${(FREQUENCY_LABEL[s.repayment_frequency] ?? s.repayment_frequency)} payments`],
     ['Installments', num(s.installment_count)],
     ['Installment amount', peso(s.installment_amount), toNumber(s.last_installment_amount) !== toNumber(s.installment_amount) ? `Final: ${peso(s.last_installment_amount)}` : undefined],
     ['Total interest', peso(s.total_interest)],
@@ -45,7 +45,7 @@ export function HeadlineFigures({ calc }: { calc: LoanCalculation }) {
       <div>
         <p className="text-[11px] uppercase tracking-wide text-white/60">Installment</p>
         <p className="tabular text-lg font-semibold sm:text-xl">{peso(s.installment_amount)}</p>
-        <p className="text-[11px] text-white/60">× {s.installment_count} {s.repayment_frequency}</p>
+        <p className="text-[11px] text-white/60">× {s.installment_count} {(FREQUENCY_LABEL[s.repayment_frequency] ?? s.repayment_frequency)}</p>
       </div>
       <div>
         <p className="text-[11px] uppercase tracking-wide text-white/60">Total interest</p>

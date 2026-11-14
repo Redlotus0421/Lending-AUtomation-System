@@ -153,6 +153,7 @@ export const PENALTY_TYPES = [
 
 export const FREQUENCIES = [
   { value: 'monthly', label: 'Monthly', unit: 'months' },
+  { value: 'semimonthly', label: 'Semi-monthly (twice a month)', unit: 'semi-monthly payments' },
   { value: 'weekly', label: 'Weekly', unit: 'weeks' },
   { value: 'daily', label: 'Daily', unit: 'days' },
 ] as const
