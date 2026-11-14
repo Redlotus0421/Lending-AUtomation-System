@@ -275,6 +275,10 @@ export interface LoanSummary {
   rounding: string
   repayment_frequency: Frequency
   term_count: number
+  /** repayment period in months, when the loan was entered in months */
+  term_months?: number | null
+  /** nominal monthly rate equivalent of the entered rate */
+  monthly_rate_pct?: number | string
   installment_count: number
   duration_label: string
   release_date: string

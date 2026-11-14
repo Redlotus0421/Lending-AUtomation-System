@@ -11,7 +11,10 @@ export type SimplifiedLoanInput = {
   transaction_type: TransactionType
   borrower_id?: string
   principal: number
-  term_count: number
+  /** repayment period in months; the server derives the installments from the frequency */
+  term_months?: number
+  /** legacy: number of installments */
+  term_count?: number
   /** one of the frequencies enabled in the business settings; defaults to the business default */
   repayment_frequency?: string
   interest_rate?: number | null

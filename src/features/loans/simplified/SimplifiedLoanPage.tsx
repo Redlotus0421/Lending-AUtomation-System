@@ -9,7 +9,7 @@ import { z } from 'zod'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
-  AlertTriangle, ArrowLeft, ArrowRight, Banknote, Check, CheckCircle2, ClipboardCheck, CreditCard, FileSignature, History, IdCard,
+  AlertTriangle, ArrowLeft, ArrowRight, Banknote, Check, CheckCircle2, ChevronDown, ClipboardCheck, CreditCard, FileSignature, History, IdCard,
   Info, Lock, PenLine, RefreshCw, RotateCcw, Search, ShieldCheck, Smartphone, UserPlus, Users,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -20,6 +20,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import {
   EmptyState, ErrorState, Field, KeyValue, LoanStatusBadge, NativeSelect, PageHeader, PageLoader, Panel, Pill, Spinner, useDebounced,
 } from '@/components/common'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { FileDrop } from '@/components/common/FileDrop'
 import { PdfViewer } from '@/components/common/PdfViewer'
 import { SignaturePad, type SignaturePadHandle } from '@/components/common/SignaturePad'
@@ -37,7 +38,7 @@ import type { Borrower, SimplifiedBorrowerStatus, SimplifiedPreview } from '@/ty
 import { ScheduleTable } from '../LoanPreview'
 import { ReleaseDialog } from '../LoanActions'
 import { clearDraft, draftFiles, loadDraft, saveDraft, useAutosave, useWizardSteps } from '../wizard'
-import { NetReleaseTable, paymentLabel, termUnit } from './shared'
+import { NetReleaseTable, paymentLabel } from './shared'
 
 type StepKey = 'type' | 'borrower' | 'search' | 'balance' | 'loan' | 'review' | 'agreement'
 const STEPS: Record<TransactionType, { key: StepKey; label: string }[]> = {
@@ -208,14 +209,14 @@ export default function SimplifiedLoanPage() {
   const input: SimplifiedLoanInput | null = useMemo(() => {
     const p = Number(principal)
     const t = Number(term)
-    if (!type || !(p > 0) || !Number.isInteger(t) || t < 1) return null
+    if (!type || !(p > 0) || !Number.isInteger(t) || t < 1 || t > 360) return null
     if (type === 'renewal' && !borrowerId) return null
     const r = Number(rate)
     return {
       transaction_type: type,
       borrower_id: type === 'renewal' ? borrowerId! : undefined,
       principal: Math.round(p * 100) / 100,
-      term_count: t,
+      term_months: t,
       repayment_frequency: frequency,
       interest_rate: allowOverride && rate !== '' && Number.isFinite(r) ? r : null,
     }
@@ -322,7 +323,7 @@ export default function SimplifiedLoanPage() {
           fetching={preview.isFetching} fresh={previewFresh}
           onBack={() => back(type === 'new' ? 'borrower' : 'balance')}
           onNext={() => {
-            if (!input) return toast.error('Enter the loan amount and a whole-number duration')
+            if (!input) return toast.error('Enter the loan amount and a repayment period of 1 to 360 whole months')
             if (preview.error) return toast.error(errorMessage(preview.error))
             go('review')
           }} />
@@ -614,7 +615,7 @@ function BalanceStep({ data, onBack, onNext }: { data: SimplifiedBorrowerStatus;
   const b = data.borrower
   const blocked = data.open_loans.find((l) => l.pending_renewal_loan)
   return (
-    <div className="grid gap-5 lg:grid-cols-[1fr_360px]">
+    <div className="grid gap-5 *:min-w-0 lg:grid-cols-[1fr_360px]">
       <div className="space-y-5">
         <Panel title="Borrower">
           <div className="flex items-start gap-4">
@@ -738,7 +739,7 @@ function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate,
   const n = Number(term)
   const fee = settings?.simplified
   return (
-    <div className="grid gap-5 lg:grid-cols-[1fr_400px]">
+    <div className="grid gap-5 *:min-w-0 lg:grid-cols-[1fr_400px]">
       <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); onNext() }}>
         <Panel title={type === 'renewal' ? 'New loan details' : 'Loan details'} description={borrowerName ? `For ${borrowerName}` : undefined}>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -757,11 +758,10 @@ function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate,
                 </div>
               </Field>
             )}
-            <Field label={freq === 'semimonthly' ? 'Number of payments (twice a month)' : `Repayment term (${termUnit(freq)})`} required
-              hint={freq === 'semimonthly'
-                ? (Number.isInteger(n) && n > 0 ? `${n} payments = ${trimNumber(n / 2)} month${n === 2 ? '' : 's'} (e.g. 15th and 30th)` : 'Two payments per month, e.g. 15th and 30th')
-                : `${FREQUENCY_LABEL[freq] ?? freq} installments`}>
-              <Input type="number" inputMode="numeric" min={1} step={1} className="h-12 text-lg" value={term} onChange={(e) => setTerm(e.target.value)} />
+            <Field label="Repayment period (months)" required
+              error={term !== '' && !(Number.isInteger(n) && n >= 1 && n <= 360) ? 'Enter a whole number of months from 1 to 360' : undefined}
+              hint={installmentsHint(freq, n, preview)}>
+              <Input type="number" inputMode="numeric" min={1} max={360} step={1} className="h-12 text-lg" value={term} onChange={(e) => setTerm(e.target.value)} />
             </Field>
             <Field label="Interest rate (%)" hint={allowOverride ? 'Prefilled from your business settings; your settings allow changing it.' : 'Fixed by your business settings'}>
               <div className="relative">
@@ -796,9 +796,15 @@ function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate,
             <div className={cn('space-y-4 transition', !fresh && 'opacity-60')}>
               <ComputationFigures p={preview} />
               {type === 'renewal' && <RenewalTable p={preview} />}
+              <Collapsible>
+                <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg border px-3 py-2 text-sm font-medium hover:bg-muted/50">
+                  Payment schedule ({preview.schedule.length} payments) <ChevronDown className="size-4 text-muted-foreground" />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="pt-2"><ScheduleTable rows={preview.schedule} maxHeight={320} /></CollapsibleContent>
+              </Collapsible>
             </div>
           ) : (
-            <p className="py-6 text-center text-sm text-muted-foreground">Enter the amount and term to see the computation.</p>
+            <p className="py-6 text-center text-sm text-muted-foreground">Enter the amount and repayment period to see the computation.</p>
           )}
         </Panel>
       </aside>
@@ -806,21 +812,37 @@ function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate,
   )
 }
 
+/** Hint under the months field: how many collections the period produces (from the server preview when available). */
+function installmentsHint(freq: string, months: number, preview: SimplifiedPreview | undefined) {
+  if (!(Number.isInteger(months) && months > 0)) return freq === 'semimonthly' ? 'Collected twice a month, e.g. 15th and 30th' : undefined
+  const s = preview?.summary
+  if (s && s.term_months === months && s.repayment_frequency === freq) {
+    return `${s.installment_count} ${FREQUENCY_LABEL[freq] ?? freq} payment${s.installment_count === 1 ? '' : 's'}`
+  }
+  if (freq === 'monthly') return `${months} monthly payment${months === 1 ? '' : 's'}`
+  if (freq === 'semimonthly') return `${months * 2} semi-monthly payments (twice a month)`
+  return `${FREQUENCY_LABEL[freq] ?? freq} payments on every due date within ${months} month${months === 1 ? '' : 's'}`
+}
+
 function ComputationFigures({ p }: { p: SimplifiedPreview }) {
   const s = p.summary
+  const monthly = s.monthly_rate_pct ?? (s.rate_period === 'monthly' ? s.interest_rate : null)
   const rows: [string, string][] = [
     ['Principal amount', peso(s.principal)],
-    ['Interest rate', `${trimNumber(s.interest_rate, 4)}% per ${s.rate_period === 'monthly' ? 'month' : s.rate_period.replace('ly', '')}${p.rate_overridden ? ' (override)' : ''}`],
+    ['Monthly interest rate', monthly != null
+      ? `${trimNumber(monthly, 4)}% per month${s.rate_period !== 'monthly' ? ` (${trimNumber(s.interest_rate, 4)}% per ${s.rate_period.replace('ly', '')})` : ''}${p.rate_overridden ? ' (override)' : ''}`
+      : `${trimNumber(s.interest_rate, 4)}% per ${s.rate_period}`],
     ['Total interest', peso(s.total_interest)],
     ['Fees & charges', toNumber(s.total_charges) > 0 ? `${peso(s.total_charges)} (${s.charges_treatment === 'added' ? 'added to installments' : 'deducted'})` : 'None'],
     ['Total repayment amount', peso(s.total_repayment)],
-    ['Repayment duration', s.duration_label],
-    ['Payment schedule', `${s.installment_count} ${FREQUENCY_LABEL[s.repayment_frequency] ?? s.repayment_frequency} payments · ${fmtDate(s.first_due_date)} – ${fmtDate(s.last_due_date)}`],
+    ['Repayment period', s.term_months ? `${s.term_months} month${s.term_months === 1 ? '' : 's'}` : s.duration_label],
+    ['Number of installments', `${s.installment_count} · ${FREQUENCY_LABEL[s.repayment_frequency] ?? s.repayment_frequency}`],
+    ['Payment dates', `${fmtDate(s.first_due_date)} – ${fmtDate(s.last_due_date)}`],
   ]
   return (
     <div className="space-y-3">
       <div className="rounded-xl bg-[#142B4A] p-4 text-white">
-        <p className="text-xs uppercase tracking-wide text-white/60">{paymentLabel(s.repayment_frequency)}</p>
+        <p className="text-xs uppercase tracking-wide text-white/60">Payment per collection · {FREQUENCY_LABEL[s.repayment_frequency] ?? s.repayment_frequency}</p>
         <p className="tabular text-3xl font-semibold">{peso(s.installment_amount)}</p>
         {toNumber(s.last_installment_amount) !== toNumber(s.installment_amount) && <p className="text-xs text-white/60">Final payment {peso(s.last_installment_amount)}</p>}
       </div>
@@ -873,7 +895,7 @@ function ReviewStep({ type, preview, fresh, fetching, refetch, draft, files, sta
   const name = draft ? [draft.first_name, draft.middle_name, draft.last_name].filter((x) => x?.trim()).join(' ') : status?.borrower.full_name ?? ''
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[1fr_380px]">
+    <div className="grid gap-5 *:min-w-0 lg:grid-cols-[1fr_380px]">
       <div className="space-y-5">
         <Panel title="Borrower information">
           <div className="flex items-start gap-4">

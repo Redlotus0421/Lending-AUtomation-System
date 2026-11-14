@@ -172,7 +172,9 @@ export function buildPlaceholderValues(d: RenderData): Record<string, string> {
     interest_rate: interestRateText(s),
     interest_method: (METHOD_LABEL[s.interest_method] ?? s.interest_method).toLowerCase(),
     effective_interest_rate: effectiveRateText(s),
-    loan_duration: durationLabel(toNumber(s.installment_count), s.repayment_frequency),
+    loan_duration: s.term_months
+      ? `${s.term_months} month${Number(s.term_months) === 1 ? '' : 's'} (${s.installment_count} ${FREQUENCY_LABEL[s.repayment_frequency] ?? s.repayment_frequency} installment${Number(s.installment_count) === 1 ? '' : 's'})`
+      : durationLabel(toNumber(s.installment_count), s.repayment_frequency),
     payment_frequency: FREQUENCY_LABEL[s.repayment_frequency] ?? s.repayment_frequency,
     installment_count: String(s.installment_count),
     installment_amount: money(s.installment_amount),
@@ -216,6 +218,7 @@ export function disclosureRows(d: RenderData): [string, string][] {
     ['Nominal interest rate', interestRateText(s)],
     ['Interest computation method', METHOD_LABEL[s.interest_method] ?? s.interest_method],
     ['Effective interest rate (EIR)', effectiveRateText(s)],
+    ...(s.term_months ? [['Repayment period', `${s.term_months} month${Number(s.term_months) === 1 ? '' : 's'}`] as [string, string]] : []),
     ['Number and frequency of installments', `${s.installment_count} ${FREQUENCY_LABEL[s.repayment_frequency] ?? ''} installments`],
     ['Regular installment amount', money(s.installment_amount) + (toNumber(s.last_installment_amount) !== toNumber(s.installment_amount) ? ` (final: ${money(s.last_installment_amount)})` : '')],
     ['First / last due date', `${shortDate(s.first_due_date)} / ${shortDate(s.last_due_date)}`],

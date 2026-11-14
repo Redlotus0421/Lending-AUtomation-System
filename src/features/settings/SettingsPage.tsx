@@ -599,7 +599,7 @@ function SimplifiedSection({ value, settings }: { value: Settings['simplified'];
   useEffect(() => setV(value), [value])
   const active = organization?.lending_mode === 'simplified'
   const onSave = () => {
-    if (!numberOk(v.default_term, 1, 3660, true)) return toast.error('Default duration must be a whole number from 1 to 3,660')
+    if (!numberOk(v.default_term, 1, 360, true)) return toast.error('Default repayment period must be a whole number of months from 1 to 360')
     if (v.processing_fee_type !== 'none' && !numberOk(v.processing_fee_value, 0, v.processing_fee_type === 'percent' ? 50 : 1_000_000)) {
       return toast.error(v.processing_fee_type === 'percent' ? 'Fee percentage must be between 0 and 50' : 'Enter the fee amount')
     }
@@ -636,7 +636,7 @@ function SimplifiedSection({ value, settings }: { value: Settings['simplified'];
             description="Owners and admins skip the separate review step. Segregation-of-duties rules in Repayment still apply."
             checked={v.approve_on_create} onChange={(x) => setV({ ...v, approve_on_create: x })} />
           <div className="grid gap-4 sm:grid-cols-3">
-            <Field label="Default repayment term" hint="Number of installments suggested on new loans">
+            <Field label="Default repayment period (months)" hint="Suggested on new loans; installments follow the payment frequency">
               <Input className="h-10" inputMode="numeric" value={v.default_term} onChange={(e) => setV({ ...v, default_term: e.target.value as unknown as number })} />
             </Field>
             <Field label="Processing fee">
