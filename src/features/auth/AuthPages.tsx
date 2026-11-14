@@ -47,7 +47,7 @@ function AuthLayout({ children, title, subtitle }: { children: ReactNode; title:
           <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
           {subtitle && <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>}
           {!isSupabaseConfigured && (
-            <p className="mt-4 rounded-md bg-amber-50 p-3 text-xs text-amber-800">Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env.</p>
+            <p className="mt-4 rounded-md bg-amber-50 p-3 text-xs text-amber-800">Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env locally, or in your host's environment variables (e.g. Vercel), then rebuild.</p>
           )}
           <div className="mt-6">{children}</div>
         </div>

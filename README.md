@@ -56,6 +56,18 @@ not members of any account, so RLS gives them no access to borrower, loan, payme
 shows only per-account counts and totals. Suspending an account blocks all of its users (no records are changed).
 Self-service sign-up and onboarding are disabled (`create_organization` refuses), so a stray login gets no access.
 
+## 2b. Deploy the web app (Vercel)
+
+Import the GitHub repository in Vercel (framework preset **Vite**; `vercel.json` sets the build and the SPA rewrite so
+links such as `/sign/<token>` and `/admin` open directly). Then:
+
+1. *Project → Settings → Environment Variables*: add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (the same public
+   values as `.env`) for Production and Preview. Vite bakes them in at build time, so **redeploy** after adding them.
+2. Supabase *Authentication → URL Configuration*: set *Site URL* to the Vercel URL and add `https://<your-app>.vercel.app/**`
+   (and `http://localhost:5173/**` for local work) to the redirect URLs, so password-reset links return to the app.
+
+Never add the service-role key to Vercel: the browser only needs the anon key; privileged work runs in Edge Functions.
+
 ## 3. Architecture
 
 ```
