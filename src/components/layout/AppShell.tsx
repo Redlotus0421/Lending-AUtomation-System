@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { ROLE_LABEL } from '@/lib/constants'
 import { initials, timeAgo } from '@/lib/format'
+import { NewLoanChooserProvider, useNewLoan } from '@/features/loans/NewLoanChooser'
 
 type NavItem = { to: string; label: string; icon: ReactNode; perm?: string | string[]; end?: boolean }
 
@@ -182,8 +183,13 @@ function UserMenu() {
 }
 
 export function AppShell() {
+  return <NewLoanChooserProvider><ShellLayout /></NewLoanChooserProvider>
+}
+
+function ShellLayout() {
   const [menuOpen, setMenuOpen] = useState(false)
   const { can } = useAuth()
+  const newLoan = useNewLoan()
   const location = useLocation()
   const bottom = [
     { to: '/', label: 'Home', icon: <LayoutDashboard />, show: can('dashboard.view'), end: true },
@@ -207,7 +213,7 @@ export function AppShell() {
           <div className="lg:hidden"><span className="text-base font-semibold text-[#142B4A]">LendFlow</span></div>
           <div className="flex-1" />
           {can('loans.create') && (
-            <Button asChild className="hidden sm:inline-flex"><Link to="/loans/new"><PlusCircle /> New loan</Link></Button>
+            <Button className="hidden sm:inline-flex" onClick={newLoan.open}><PlusCircle /> New loan</Button>
           )}
           <Notifications />
           <UserMenu />
@@ -220,14 +226,18 @@ export function AppShell() {
       {/* mobile bottom navigation */}
       <nav className="no-print pb-safe fixed inset-x-0 bottom-0 z-30 border-t bg-white lg:hidden">
         <div className="grid" style={{ gridTemplateColumns: `repeat(${bottom.length + 1}, minmax(0, 1fr))` }}>
-          {bottom.map((b) => (
+          {bottom.map((b) => b.primary ? (
+            <button key={b.to} type="button" onClick={newLoan.open}
+              className="flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium text-slate-600 [&_svg]:size-5">
+              <span className="-mt-5 grid size-12 place-items-center rounded-full bg-[#2563EB] text-white shadow-lg ring-4 ring-white">{b.icon}</span>
+              <span>{b.label}</span>
+            </button>
+          ) : (
             <NavLink key={b.to} to={b.to} end={b.end}
               className={({ isActive }) => cn('flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium [&_svg]:size-5',
-                b.primary ? 'text-white' : isActive ? 'text-blue-600' : 'text-slate-500')}>
-              {b.primary ? (
-                <span className="-mt-5 grid size-12 place-items-center rounded-full bg-[#2563EB] text-white shadow-lg ring-4 ring-white">{b.icon}</span>
-              ) : b.icon}
-              <span className={cn(b.primary && 'text-slate-600')}>{b.label}</span>
+                isActive ? 'text-blue-600' : 'text-slate-500')}>
+              {b.icon}
+              <span>{b.label}</span>
             </NavLink>
           ))}
           <button onClick={() => setMenuOpen(true)} className="flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium text-slate-500 [&_svg]:size-5">

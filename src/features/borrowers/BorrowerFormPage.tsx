@@ -437,7 +437,7 @@ export default function BorrowerFormPage() {
         </Panel>
       </div>
 
-      <div className="sticky bottom-16 z-10 -mx-3 mt-5 border-t bg-white/95 px-3 py-3 backdrop-blur sm:-mx-6 sm:px-6 lg:bottom-0">
+      <div className="mt-5 border-t pt-4">
         <div className="flex items-center justify-end gap-2">
           <Button type="button" variant="outline" onClick={() => navigate(backTo)} disabled={isSubmitting}>Cancel</Button>
           <Button type="submit" className="min-w-36" disabled={isSubmitting || hardDuplicate}>

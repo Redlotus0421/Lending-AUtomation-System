@@ -10,7 +10,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { toast } from 'sonner'
 import {
   AlertTriangle, ArrowLeft, ArrowRight, Banknote, Check, CheckCircle2, ChevronDown, ClipboardCheck, CreditCard, FileSignature, History, IdCard,
-  Info, Lock, PenLine, RefreshCw, RotateCcw, Search, ShieldCheck, Smartphone, UserPlus, Users,
+  Info, Lock, PenLine, RefreshCw, RotateCcw, Search, ShieldCheck, Smartphone, Users,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -39,6 +39,7 @@ import { ScheduleTable } from '../LoanPreview'
 import { ReleaseDialog } from '../LoanActions'
 import { clearDraft, draftFiles, loadDraft, saveDraft, useAutosave, useWizardSteps } from '../wizard'
 import { NetReleaseTable, paymentLabel } from './shared'
+import { TransactionOptions } from './TransactionOptions'
 
 type StepKey = 'type' | 'borrower' | 'search' | 'balance' | 'loan' | 'review' | 'agreement'
 const STEPS: Record<TransactionType, { key: StepKey; label: string }[]> = {
@@ -120,9 +121,19 @@ export default function SimplifiedLoanPage() {
       clearDraft(draftKey)
       return null
     }
+    // Picked a transaction in the New loan popup: a draft of the other kind is discarded, unless
+    // its loan was already created (that one must be finished first).
+    const wanted = params.get('type')
+    if (wanted && !params.get('step') && d.type && d.type !== wanted && !d.created) {
+      clearDraft(draftKey)
+      return null
+    }
     return d
   })
-  const [restored, setRestored] = useState(!!initial && initial.step !== 'type')
+  // only announce a restore when something was actually entered
+  const [restored, setRestored] = useState(!!initial && initial.step !== 'type' && (
+    !!initial.created || !!initial.borrowerId || initial.principal !== '' || Object.values(initial.borrower).some((v) => v.trim() !== '')
+  ))
 
   // new borrower
   const form = useForm<BorrowerDraft>({
@@ -151,13 +162,25 @@ export default function SimplifiedLoanPage() {
   const [created, setCreated] = useState<SimplifiedLoanResult | null>(initial?.created ?? null)
   const [agreementId, setAgreementId] = useState<string | null>(initial?.agreementId ?? null)
 
-  // entry point: resume a saved draft, or open a "Reloan" link on the balance step
+  const startType = (t: TransactionType, replace = false) => {
+    if (t === 'new' && !(can('borrowers.create') && can('borrowers.view_sensitive'))) {
+      toast.error('Registering a new borrower needs permission to create borrowers and handle identity documents.')
+      if (replace) go('type', { replace: true, extra: { type: null } })
+      return
+    }
+    go(t === 'new' ? 'borrower' : borrowerId ? 'balance' : 'search', { replace, extra: { type: t } })
+  }
+
+  // entry point: resume a saved draft, open a "Reloan" link on the balance step, or start the
+  // transaction picked in the New loan popup
   useEffect(() => {
     if (params.get('step')) return
     if (initial && initial.step !== 'type' && initial.type) {
       go(initial.step, { replace: true, extra: { type: initial.type } })
     } else if (params.get('borrower')) {
       go('balance', { replace: true, extra: { type: 'renewal' } })
+    } else if (type) {
+      startType(type, true)
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -288,15 +311,7 @@ export default function SimplifiedLoanPage() {
         </ol>
       )}
 
-      {step === 'type' && (
-        <TypeStep onPick={(t) => {
-          if (t === 'new' && !(can('borrowers.create') && can('borrowers.view_sensitive'))) {
-            toast.error('Registering a new borrower needs permission to create borrowers and handle identity documents.')
-            return
-          }
-          go(t === 'new' ? 'borrower' : borrowerId ? 'balance' : 'search', { extra: { type: t } })
-        }} />
-      )}
+      {step === 'type' && <TypeStep onPick={(t) => startType(t)} />}
 
       {step === 'borrower' && type === 'new' && (
         <NewBorrowerStep form={form} files={files} setFiles={setFiles} fileErrors={fileErrors} setFileErrors={setFileErrors}
@@ -396,32 +411,7 @@ export default function SimplifiedLoanPage() {
 
 // ---------------------------------------------------------------------------
 function TypeStep({ onPick }: { onPick: (t: TransactionType) => void }) {
-  const options: { t: TransactionType; icon: React.ReactNode; title: string; desc: string; points: string[] }[] = [
-    {
-      t: 'new', icon: <UserPlus className="size-6" />, title: 'New loan', desc: 'First loan of a new borrower.',
-      points: ['Register the borrower with photo, ID and ATM card', 'Add the co-maker', 'Enter amount and duration — the rate is automatic'],
-    },
-    {
-      t: 'renewal', icon: <RefreshCw className="size-6" />, title: 'Reloan / Renew', desc: 'Another loan for a registered borrower.',
-      points: ['Search the borrower — no re-registration', 'Outstanding balance is fetched automatically', 'Balance is deducted from the new loan'],
-    },
-  ]
-  return (
-    <div className="grid gap-4 md:grid-cols-2">
-      {options.map((o) => (
-        <button key={o.t} type="button" onClick={() => onPick(o.t)}
-          className="group rounded-2xl border-2 border-slate-200 bg-white p-5 text-left shadow-card transition hover:border-[#2563EB] hover:shadow-lg focus-visible:border-[#2563EB] focus-visible:outline-none">
-          <span className="grid size-12 place-items-center rounded-xl bg-[#142B4A]/5 text-[#142B4A] group-hover:bg-[#2563EB] group-hover:text-white">{o.icon}</span>
-          <span className="mt-4 block text-lg font-semibold">{o.title}</span>
-          <span className="block text-sm text-muted-foreground">{o.desc}</span>
-          <ul className="mt-3 space-y-1.5">
-            {o.points.map((p) => <li key={p} className="flex gap-2 text-sm"><CheckCircle2 className="mt-0.5 size-4 shrink-0 text-teal-600" />{p}</li>)}
-          </ul>
-          <span className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-[#2563EB]">Start <ArrowRight className="size-4" /></span>
-        </button>
-      ))}
-    </div>
-  )
+  return <TransactionOptions onPick={onPick} />
 }
 
 // ---------------------------------------------------------------------------
@@ -535,7 +525,7 @@ function NewBorrowerStep({ form, files, setFiles, fileErrors, setFileErrors, onB
         </div>
       </Panel>
 
-      <div className="sticky bottom-20 z-10 flex gap-2 rounded-xl border bg-white/95 p-3 shadow-lg backdrop-blur lg:bottom-4">
+      <div className="flex gap-2 rounded-xl border bg-white p-3">
         <Button type="button" variant="outline" className="h-12" onClick={onBack}><ArrowLeft /> Back</Button>
         <Button type="submit" className="h-12 flex-1 text-base font-semibold" disabled={checking}>{checking ? <Spinner /> : null} Continue to loan details <ArrowRight /></Button>
       </div>
@@ -780,7 +770,7 @@ function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate,
           </div>
           <p className="mt-3 flex gap-2 text-xs text-muted-foreground"><ShieldCheck className="size-4 shrink-0 text-teal-600" /> Interest, fees, penalties and the schedule come from your business settings and are computed on the server.</p>
         </Panel>
-        <div className="sticky bottom-20 z-10 flex gap-2 rounded-xl border bg-white/95 p-3 shadow-lg backdrop-blur lg:bottom-4">
+        <div className="flex gap-2 rounded-xl border bg-white p-3">
           <Button type="button" variant="outline" className="h-12" onClick={onBack}><ArrowLeft /> Back</Button>
           <Button type="submit" className="h-12 flex-1 text-base font-semibold" disabled={!preview || !!previewError}>
             <ClipboardCheck className="size-5" /> REVIEW LOAN

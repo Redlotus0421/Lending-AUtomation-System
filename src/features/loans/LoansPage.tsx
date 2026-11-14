@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { HandCoins, PlusCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,7 @@ import { useAuth } from '@/features/auth/AuthProvider'
 import { loansService } from '@/services/loans'
 import { fmtDate, peso, toNumber } from '@/lib/format'
 import type { LoanStatus, LoanView } from '@/types/db'
+import { useNewLoan } from './NewLoanChooser'
 
 const TABS: { value: string; label: string; statuses: LoanStatus[]; overdue?: boolean; order?: string }[] = [
   { value: 'active', label: 'Active', statuses: ['active'], order: 'next_due' },
@@ -27,6 +28,7 @@ export default function LoansPage() {
   const [page, setPage] = useState(0)
   const term = useDebounced(search)
   const { can } = useAuth()
+  const newLoan = useNewLoan()
   const navigate = useNavigate()
   const q = useQuery({
     queryKey: ['loans', 'list', tab.value, term, page],
@@ -38,7 +40,7 @@ export default function LoansPage() {
   return (
     <div>
       <PageHeader title="Active Loans" description="Released loans with live balances, next due dates and overdue status."
-        actions={can('loans.create') && <Button asChild><Link to="/loans/new"><PlusCircle /> New loan</Link></Button>} />
+        actions={can('loans.create') && <Button onClick={newLoan.open}><PlusCircle /> New loan</Button>} />
       <Panel bodyClassName="p-3 sm:p-4">
         <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <Tabs value={tab.value} onValueChange={(v) => { setParams({ tab: v }); setPage(0) }}>

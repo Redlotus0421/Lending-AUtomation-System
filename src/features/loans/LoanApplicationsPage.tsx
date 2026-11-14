@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { ClipboardList, PlusCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,7 @@ import { useAuth } from '@/features/auth/AuthProvider'
 import { LOAN_PIPELINE, loansService } from '@/services/loans'
 import { fmtDate, peso, timeAgo } from '@/lib/format'
 import type { LoanStatus, LoanView } from '@/types/db'
+import { useNewLoan } from './NewLoanChooser'
 
 const TABS: { value: string; label: string; statuses: LoanStatus[] }[] = [
   { value: 'pipeline', label: 'In progress', statuses: LOAN_PIPELINE },
@@ -30,6 +31,7 @@ export default function LoanApplicationsPage() {
   const term = useDebounced(search)
   const navigate = useNavigate()
   const { can } = useAuth()
+  const newLoan = useNewLoan()
   const q = useQuery({
     queryKey: ['loans', 'applications', tab.value, term, page],
     queryFn: () => loansService.list({ statuses: tab.statuses, search: term, page }),
@@ -49,7 +51,7 @@ export default function LoanApplicationsPage() {
   return (
     <div>
       <PageHeader title="Loan Applications" description="Applications move through review, approval and signing before funds are released."
-        actions={can('loans.create') && <Button asChild><Link to="/loans/new"><PlusCircle /> New loan</Link></Button>} />
+        actions={can('loans.create') && <Button onClick={newLoan.open}><PlusCircle /> New loan</Button>} />
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Pending review" value={c.pending_review ?? 0} tone="amber" onClick={() => setParams({ tab: 'review' })} />
         <StatCard label="Approved" value={c.approved ?? 0} tone="blue" onClick={() => setParams({ tab: 'approved' })} />

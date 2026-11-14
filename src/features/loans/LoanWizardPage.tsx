@@ -548,7 +548,7 @@ export default function LoanWizardPage() {
               </Panel>
             </Collapsible>
 
-            <div className="sticky bottom-20 z-10 flex gap-2 rounded-xl border bg-white/95 p-3 shadow-lg backdrop-blur lg:bottom-4">
+            <div className="flex gap-2 rounded-xl border bg-white p-3">
               {!editId && <Button type="button" variant="outline" className="h-12" onClick={() => backTo(0)}><ArrowLeft /> Back</Button>}
               <Button type="submit" className="h-12 flex-1 bg-[#2563EB] text-base font-semibold hover:bg-[#1d4ed8]">
                 <Calculator className="size-5" /> PREVIEW LOAN
@@ -591,7 +591,7 @@ export default function LoanWizardPage() {
               <Panel title="Amortization schedule" description={`${preview.data.schedule.length} installments · ${fmtDate(preview.data.summary.first_due_date)} to ${fmtDate(preview.data.summary.last_due_date)}`}>
                 <ScheduleTable rows={preview.data.schedule} maxHeight={520} />
               </Panel>
-              <div className="sticky bottom-20 z-10 flex flex-wrap gap-2 rounded-xl border bg-white/95 p-3 shadow-lg backdrop-blur lg:bottom-4">
+              <div className="flex flex-wrap gap-2 rounded-xl border bg-white p-3">
                 <Button variant="outline" className="h-12" onClick={() => backTo(1)}><Pencil /> Edit loan details</Button>
                 <Button className="h-12 flex-1" onClick={() => setStep(3)} disabled={!previewFresh}>Continue to agreement <ArrowRight /></Button>
               </div>

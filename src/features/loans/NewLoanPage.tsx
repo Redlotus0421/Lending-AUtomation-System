@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { PageLoader } from '@/components/common'
 import { useAuth } from '@/features/auth/AuthProvider'
 import { orgService } from '@/services/org'
+import { useNewLoan } from './NewLoanChooser'
 
 const LoanWizardPage = lazy(() => import('./LoanWizardPage'))
 const SimplifiedLoanPage = lazy(() => import('./simplified/SimplifiedLoanPage'))
@@ -15,8 +16,9 @@ const SimplifiedLoanPage = lazy(() => import('./simplified/SimplifiedLoanPage'))
  */
 export default function NewLoanPage() {
   const { organization } = useAuth()
+  const { nonce } = useNewLoan() // a pick in the New loan popup restarts the page even if it is open
   const org = useQuery({ queryKey: ['organization', 'lending-mode'], queryFn: orgService.get, staleTime: 0 })
   if (org.isLoading) return <PageLoader />
   const mode = org.data?.lending_mode ?? organization?.lending_mode
-  return mode === 'simplified' ? <SimplifiedLoanPage /> : <LoanWizardPage />
+  return mode === 'simplified' ? <SimplifiedLoanPage key={nonce} /> : <LoanWizardPage key={nonce} />
 }
