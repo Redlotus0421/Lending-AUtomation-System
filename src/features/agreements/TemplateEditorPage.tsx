@@ -68,7 +68,7 @@ export function TemplateEditor({ id, embedded = false, onSaved }: { id: string; 
     setTitle(d.title)
     setBody(d.body)
     if (isNew || !name.trim()) setName(d.suggested_name)
-    setNote(`Imported from ${file} with the AI assistant`)
+    setNote(`Imported from ${file} with the built-in assistant`)
     setAiDraft({ ...d, file })
     toast.success('Draft ready — check the preview, then save')
   }
@@ -156,14 +156,14 @@ export function TemplateEditor({ id, embedded = false, onSaved }: { id: string; 
         <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-white text-violet-600 shadow-sm"><Sparkles className="size-5" /></span>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold">Already have your own terms?</p>
-          <p className="text-xs text-muted-foreground">Upload your loan agreement (PDF, Word, photo or text). The AI assistant reads it and writes it as a template with the right fields filled in for every loan.</p>
+          <p className="text-xs text-muted-foreground">Upload your loan agreement (PDF, Word or text). The built-in assistant turns it into a template with the right fields filled in for every loan — on this device, no internet AI.</p>
         </div>
         <Button variant="outline" className="h-11 shrink-0 bg-white" onClick={() => setAiOpen(true)}><Sparkles /> Upload terms</Button>
       </div>
       {aiDraft && (
         <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
           <div className="flex items-start justify-between gap-2">
-            <p className="font-semibold">AI draft from {aiDraft.file} — not saved yet</p>
+            <p className="font-semibold">Draft from {aiDraft.file} — not saved yet</p>
             <button onClick={() => setAiDraft(null)} aria-label="Dismiss" className="rounded p-1 hover:bg-amber-100"><X className="size-4" /></button>
           </div>
           <p className="mt-1 text-xs">Read the preview carefully before saving. The assistant can make mistakes.</p>

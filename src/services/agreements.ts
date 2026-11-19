@@ -22,9 +22,6 @@ export const templatesService = {
   },
   save: (p: { id?: string; name: string; description?: string; title: string; body: string; settings?: Record<string, unknown>; change_note?: string; is_default?: boolean; is_active?: boolean }) =>
     rpc<{ id: string; version_id: string; version_no: number }>('save_agreement_template', { p }),
-  /** AI assistant: turn an uploaded terms document into a template draft (nothing is saved). */
-  aiDraft: (p: { file_name: string; mime_type: string; data_base64: string }) =>
-    invoke<{ title: string; suggested_name: string; body: string; notes: string[] }>('template-ai', p),
   duplicate: (id: string, name?: string) => rpc<{ id: string }>('duplicate_agreement_template', { p_template_id: id, p_name: name ?? null }),
   setDefault: (id: string) => rpc('set_default_agreement_template', { p_template_id: id }),
   async setActive(id: string, active: boolean) {

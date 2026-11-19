@@ -48,5 +48,3 @@ verify_jwt = false
 [functions.platform-admin]
 verify_jwt = false
 
-[functions.template-ai]
-verify_jwt = false
