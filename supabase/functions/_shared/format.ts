@@ -113,7 +113,7 @@ export const PERIOD_PLURAL: Record<string, string> = { daily: 'days', weekly: 'w
 export const METHOD_LABEL: Record<string, string> = { flat: 'Flat interest', diminishing: 'Diminishing balance' }
 
 export const SIGNER_LABEL: Record<string, string> = {
-  borrower: 'Borrower', lender: 'Lender', witness_1: 'Witness', witness_2: 'Witness',
+  borrower: 'Borrower', co_maker: 'Co-maker', lender: 'Lender', witness_1: 'Witness', witness_2: 'Witness',
 }
 
 export function durationLabel(count: number, frequency: string): string {

@@ -17,6 +17,8 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import {
   EmptyState, ErrorState, Field, LoanStatusBadge, NativeSelect, PageHeader, PageLoader, Panel, Spinner, useDebounced,
 } from '@/components/common'
+import { MoneyInput } from '@/components/common/MoneyInput'
+import { DEFAULT_PAY_DAYS, PayDaysPicker, type PayDays } from './PayDaysPicker'
 import { useAuth } from '@/features/auth/AuthProvider'
 import { borrowersService } from '@/services/borrowers'
 import { loansService, productsService, type LoanInput } from '@/services/loans'
@@ -42,6 +44,7 @@ const schema = z.object({
   term_count: num('Enter the duration').pipe(z.number().int('Use whole numbers').min(1, 'At least 1').max(3660, 'Too long')),
   release_date: z.string().min(10, 'Select the release date'),
   first_due_date: z.string(),
+  pay_days: z.tuple([z.number(), z.number()]),
   processing_fee_type: z.enum(['none', 'fixed', 'percent']),
   processing_fee_value: num('Enter a fee value').pipe(z.number().min(0)),
   other_charges: num('Enter charges (0 if none)').pipe(z.number().min(0)),
@@ -83,6 +86,7 @@ function toPayload(v: FormValues): LoanInput {
     term_count: v.term_count,
     release_date: v.release_date,
     first_due_date: v.first_due_date || null,
+    pay_days: v.repayment_frequency === 'semimonthly' ? v.pay_days : undefined,
     processing_fee_type: v.processing_fee_type,
     processing_fee_value: v.processing_fee_type === 'none' ? 0 : v.processing_fee_value,
     other_charges: v.other_charges,
@@ -157,6 +161,7 @@ export default function LoanWizardPage() {
     term_count: 12,
     release_date: today,
     first_due_date: '',
+    pay_days: DEFAULT_PAY_DAYS,
     processing_fee_type: 'none',
     processing_fee_value: 0,
     other_charges: 0,
@@ -210,6 +215,7 @@ export default function LoanWizardPage() {
       term_count: l.term_count,
       release_date: l.release_date,
       first_due_date: l.first_due_date,
+      pay_days: l.pay_days?.length === 2 ? [l.pay_days[0], l.pay_days[1]] : DEFAULT_PAY_DAYS,
       processing_fee_type: l.processing_fee_type as FormValues['processing_fee_type'],
       processing_fee_value: toNumber(l.processing_fee_value),
       other_charges: toNumber(l.other_charges),
@@ -403,7 +409,7 @@ export default function LoanWizardPage() {
                 </Field>
                 <Field label="Loan amount (₱)" required error={errors.principal?.message}
                   hint={product && (product.min_amount || product.max_amount) ? `Product range ${peso(product.min_amount ?? 0, { decimals: 0 })} – ${product.max_amount ? peso(product.max_amount, { decimals: 0 }) : 'no limit'}` : undefined}>
-                  <Input type="number" inputMode="decimal" step="0.01" min="0" placeholder="50,000.00" className="h-11 text-base" {...register('principal', { valueAsNumber: true })} />
+                  <MoneyInput placeholder="50,000.00" className="h-11 text-base" value={values.principal} onValueChange={(r) => setValue('principal', r === '' ? NaN : Number(r), { shouldValidate: true, shouldDirty: true })} />
                 </Field>
                 <Field label="Purpose of loan">
                   <Input className="h-11" placeholder="e.g. Business capital, tuition" {...register('purpose')} />
@@ -461,12 +467,21 @@ export default function LoanWizardPage() {
                 <Field label="Loan release date" required error={errors.release_date?.message}>
                   <Input type="date" className="h-11" {...register('release_date')} />
                 </Field>
-                <Field label="First repayment date" error={errors.first_due_date?.message} hint={!values.first_due_date && autoFirstDue ? `Automatic: ${fmtDate(autoFirstDue)}` : 'Leave blank for one period after release'}>
-                  <div className="flex gap-2">
-                    <Input type="date" className="h-11" {...register('first_due_date')} />
-                    {values.first_due_date && <Button type="button" variant="ghost" size="icon" className="size-11" onClick={() => setValue('first_due_date', '', { shouldValidate: true })} aria-label="Use automatic date"><X /></Button>}
+                {values.repayment_frequency === 'semimonthly' ? (
+                  <div className="sm:col-span-2">
+                    <PayDaysPicker value={(values.pay_days ?? DEFAULT_PAY_DAYS) as PayDays} releaseDate={values.release_date}
+                      onChange={(d) => setValue('pay_days', d, { shouldDirty: true })}
+                      firstDue={values.first_due_date || null}
+                      onFirstDueChange={(d) => setValue('first_due_date', d ?? '', { shouldValidate: true, shouldDirty: true })} />
                   </div>
-                </Field>
+                ) : (
+                  <Field label="First repayment date" error={errors.first_due_date?.message} hint={!values.first_due_date && autoFirstDue ? `Automatic: ${fmtDate(autoFirstDue)}` : 'Leave blank for one period after release'}>
+                    <div className="flex gap-2">
+                      <Input type="date" className="h-11" {...register('first_due_date')} />
+                      {values.first_due_date && <Button type="button" variant="ghost" size="icon" className="size-11" onClick={() => setValue('first_due_date', '', { shouldValidate: true })} aria-label="Use automatic date"><X /></Button>}
+                    </div>
+                  </Field>
+                )}
               </div>
             </Panel>
 
@@ -489,7 +504,7 @@ export default function LoanWizardPage() {
                   </NativeSelect>
                 </Field>
                 <Field label="Other charges (₱)" error={errors.other_charges?.message}>
-                  <Input type="number" step="0.01" inputMode="decimal" className="h-11" {...register('other_charges', { valueAsNumber: true })} />
+                  <MoneyInput className="h-11" value={values.other_charges} onValueChange={(r) => setValue('other_charges', r === '' ? NaN : Number(r), { shouldValidate: true, shouldDirty: true })} />
                 </Field>
                 <Field label="Other charges description" className="sm:col-span-2">
                   <Input className="h-11" placeholder="e.g. Notarial fee, documentary stamp" {...register('other_charges_description')} />

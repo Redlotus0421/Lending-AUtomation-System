@@ -16,6 +16,8 @@ export type LoanInput = {
   term_count: number
   release_date: string
   first_due_date?: string | null
+  /** semi-monthly only: the two pay days of the month, e.g. [5, 20] */
+  pay_days?: [number, number]
   processing_fee_type: 'none' | 'fixed' | 'percent'
   processing_fee_value: number
   other_charges: number

@@ -16,6 +16,7 @@ import { QrCode } from '@/components/common/QrCode'
 import { SignaturePad, type SignaturePadHandle } from '@/components/common/SignaturePad'
 import { useAuth } from '@/features/auth/AuthProvider'
 import { agreementsService } from '@/services/agreements'
+import { borrowersService } from '@/services/borrowers'
 import { errorMessage } from '@/lib/errors'
 import { fmtDateTime, phMobile, SIGNER_LABEL, timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -120,6 +121,9 @@ function AgreementDetail({ agreement: a, loan, isCurrent, onChanged }: { agreeme
   const pdf = useQuery({ queryKey: ['agreement', a.id, 'pdf', pdfPath], queryFn: () => agreementsService.pdfUrl(pdfPath!), enabled: !!pdfPath, staleTime: 10 * 60_000 })
   const [linkFor, setLinkFor] = useState<string | null>(null)
   const [signRole, setSignRole] = useState<string | null>(null)
+  const needsCoMaker = a.required_signers.includes('co_maker')
+  const guarantors = useQuery({ queryKey: ['borrower', loan.borrower_id, 'guarantors'], queryFn: () => borrowersService.guarantors(loan.borrower_id), enabled: needsCoMaker })
+  const coMaker = guarantors.data?.at(-1) ?? null
   const [showTrail, setShowTrail] = useState(false)
   const open = OPEN.includes(a.status)
   const signed = new Map((signatures.data ?? []).map((s) => [s.signer_role, s]))
@@ -189,6 +193,12 @@ function AgreementDetail({ agreement: a, loan, isCurrent, onChanged }: { agreeme
                       {role === 'lender' && can('agreements.sign_lender') && (
                         <Button size="sm" disabled={!!blocked} onClick={() => setSignRole('lender')}><PenLine /> Sign as lender</Button>
                       )}
+                      {role === 'co_maker' && can('agreements.generate') && (
+                        <>
+                          <Button size="sm" variant="outline" onClick={() => setSignRole(role)}><PenLine /> Sign in person</Button>
+                          <Button size="sm" variant={session ? 'outline' : 'ghost'} onClick={() => setLinkFor(role)}><Smartphone /> {session ? 'Share again' : 'Send signing link'}</Button>
+                        </>
+                      )}
                       {role.startsWith('witness') && can('agreements.generate') && (
                         <>
                           <Button size="sm" variant="outline" onClick={() => setSignRole(role)}><PenLine /> Sign in person</Button>
@@ -228,8 +238,8 @@ function AgreementDetail({ agreement: a, loan, isCurrent, onChanged }: { agreeme
         </Panel>
       </div>
 
-      {linkFor && <SigningLinkDialog agreement={a} loan={loan} role={linkFor} onClose={() => { setLinkFor(null); refresh() }} />}
-      {signRole && <InAppSignDialog agreement={a} role={signRole} onClose={(done) => { setSignRole(null); if (done) refresh() }} />}
+      {linkFor && <SigningLinkDialog agreement={a} loan={loan} role={linkFor} coMaker={coMaker} onClose={() => { setLinkFor(null); refresh() }} />}
+      {signRole && <InAppSignDialog agreement={a} role={signRole} coMakerName={coMaker?.full_name ?? ''} onClose={(done) => { setSignRole(null); if (done) refresh() }} />}
       {showTrail && <AuditTrailDialog agreement={a} onClose={() => setShowTrail(false)} />}
     </div>
   )
@@ -260,14 +270,21 @@ function DownloadButton({ path, name, label, icon, primary }: { path: string; na
   )
 }
 
-function SigningLinkDialog({ agreement, loan, role, onClose }: { agreement: Agreement; loan: LoanView; role: string; onClose: () => void }) {
+function SigningLinkDialog({ agreement, loan, role, coMaker, onClose }: {
+  agreement: Agreement; loan: LoanView; role: string; coMaker?: { full_name: string; mobile_number: string | null } | null; onClose: () => void
+}) {
+  // the borrower's and co-maker's names come from the borrower record on the server
+  const fixedName = role === 'borrower' || role === 'co_maker'
+  const recipient = role === 'co_maker'
+    ? { name: coMaker?.full_name ?? '', mobile: coMaker?.mobile_number ?? '' }
+    : { name: loan.borrower_name, mobile: loan.borrower_mobile ?? '' }
   const { settings } = useAuth()
   const [hours, setHours] = useState(settings?.agreement.link_expiry_hours ?? 72)
   const [name, setName] = useState(role === 'borrower' ? loan.borrower_name : '')
   const [link, setLink] = useState<{ url: string; expires: string; verification: string } | null>(null)
   const sessions = useQuery({ queryKey: ['agreement', agreement.id, 'sessions'], queryFn: () => agreementsService.sessions(agreement.id) })
   const create = useMutation({
-    mutationFn: () => agreementsService.createLink(agreement.id, role, role === 'borrower' ? undefined : name, undefined, hours),
+    mutationFn: () => agreementsService.createLink(agreement.id, role, fixedName ? undefined : name, undefined, hours),
     onSuccess: (r) => setLink({ url: agreementsService.signingLink(r.token), expires: r.expires_at, verification: r.verification_method }),
     onError: (e) => toast.error(errorMessage(e)),
   })
@@ -276,7 +293,9 @@ function SigningLinkDialog({ agreement, loan, role, onClose }: { agreement: Agre
     onSuccess: () => { toast.success('Link revoked'); void sessions.refetch() },
     onError: (e) => toast.error(errorMessage(e)),
   })
-  const message = link ? `Hi ${loan.borrower_name.split(' ')[0]}, please review and sign your loan agreement ${agreement.agreement_number} here: ${link.url} (valid until ${fmtDateTime(link.expires)}).` : ''
+  const message = !link ? '' : role === 'co_maker'
+    ? `Hi ${recipient.name.split(' ')[0]}, please review and sign as co-maker the loan agreement ${agreement.agreement_number} of ${loan.borrower_name} here: ${link.url} (valid until ${fmtDateTime(link.expires)}).`
+    : `Hi ${loan.borrower_name.split(' ')[0]}, please review and sign your loan agreement ${agreement.agreement_number} here: ${link.url} (valid until ${fmtDateTime(link.expires)}).`
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -287,7 +306,10 @@ function SigningLinkDialog({ agreement, loan, role, onClose }: { agreement: Agre
         </DialogHeader>
         {!link ? (
           <div className="space-y-4">
-            {role !== 'borrower' && (
+            {role === 'co_maker' && (
+              <p className="rounded-lg bg-blue-50 p-3 text-xs text-blue-900">Co-maker: <b>{recipient.name || '—'}</b>{recipient.mobile ? ` · ${phMobile(recipient.mobile)}` : ''}. Creating a new link revokes any previous unused link.</p>
+            )}
+            {!fixedName && (
               <div className="space-y-1.5"><label className="text-sm font-medium">Signer name</label><Input value={name} onChange={(e) => setName(e.target.value)} className="h-10" /></div>
             )}
             <div className="space-y-1.5">
@@ -316,14 +338,14 @@ function SigningLinkDialog({ agreement, loan, role, onClose }: { agreement: Agre
             )}
             <DialogFooter>
               <Button variant="outline" onClick={onClose}>Close</Button>
-              <Button onClick={() => create.mutate()} disabled={create.isPending || (role !== 'borrower' && !name.trim())}>{create.isPending ? <Spinner /> : <Link2 />} Create link</Button>
+              <Button onClick={() => create.mutate()} disabled={create.isPending || (!fixedName && !name.trim())}>{create.isPending ? <Spinner /> : <Link2 />} Create link</Button>
             </DialogFooter>
           </div>
         ) : (
           <div className="space-y-4">
             <div className="flex flex-col items-center gap-2 rounded-xl border bg-white p-4">
               <QrCode value={link.url} size={190} />
-              <p className="flex items-center gap-1 text-xs text-muted-foreground"><QrIcon className="size-3.5" /> Borrower can scan this with their phone camera</p>
+              <p className="flex items-center gap-1 text-xs text-muted-foreground"><QrIcon className="size-3.5" /> {role === 'co_maker' ? 'The co-maker' : 'Borrower'} can scan this with their phone camera</p>
             </div>
             <div className="flex gap-2">
               <Input readOnly value={link.url} className="h-10 font-mono text-xs" onFocus={(e) => e.target.select()} />
@@ -333,7 +355,7 @@ function SigningLinkDialog({ agreement, loan, role, onClose }: { agreement: Agre
               {'share' in navigator && (
                 <Button variant="outline" onClick={() => void navigator.share({ title: 'Loan agreement', text: message, url: link.url }).catch(() => undefined)}><Share2 /> Share</Button>
               )}
-              <Button variant="outline" asChild><a href={`sms:${loan.borrower_mobile}?&body=${encodeURIComponent(message)}`}><MessageSquare /> SMS</a></Button>
+              <Button variant="outline" asChild><a href={`sms:${recipient.mobile}?&body=${encodeURIComponent(message)}`}><MessageSquare /> SMS</a></Button>
               <Button variant="outline" onClick={async () => { await navigator.clipboard.writeText(message); toast.success('Message copied — paste it in Messenger/Viber') }}><Copy /> Message</Button>
               <Button variant="outline" asChild><a href={link.url} target="_blank" rel="noreferrer"><ExternalLink /> Open</a></Button>
             </div>
@@ -346,7 +368,8 @@ function SigningLinkDialog({ agreement, loan, role, onClose }: { agreement: Agre
   )
 }
 
-function InAppSignDialog({ agreement, role, onClose }: { agreement: Agreement; role: string; onClose: (done: boolean) => void }) {
+function InAppSignDialog({ agreement, role, coMakerName = '', onClose }: { agreement: Agreement; role: string; coMakerName?: string; onClose: (done: boolean) => void }) {
+  const isCoMaker = role === 'co_maker'
   const { access } = useAuth()
   const pad = useRef<SignaturePadHandle>(null)
   const [empty, setEmpty] = useState(true)
@@ -354,7 +377,9 @@ function InAppSignDialog({ agreement, role, onClose }: { agreement: Agreement; r
   const [name, setName] = useState('')
   const [preview, setPreview] = useState<string | null>(null)
   const sign = useMutation({
-    mutationFn: (png: string) => agreementsService.signInApp({ agreement_id: agreement.id, role, signature: png, signer_name: role === 'lender' ? undefined : name }),
+    mutationFn: (png: string) => agreementsService.signInApp(isCoMaker
+      ? { agreement_id: agreement.id, role, signature: png, in_person: true }
+      : { agreement_id: agreement.id, role, signature: png, signer_name: role === 'lender' ? undefined : name }),
     onSuccess: (r) => {
       const res = r.result as { finalized?: boolean }
       toast.success(res?.finalized ? 'Agreement fully signed — final PDF sealed' : 'Signature embedded in the agreement')
@@ -362,15 +387,16 @@ function InAppSignDialog({ agreement, role, onClose }: { agreement: Agreement; r
     },
     onError: (e) => toast.error(errorMessage(e)),
   })
-  const signerName = role === 'lender' ? access?.full_name ?? '' : name
+  const signerName = role === 'lender' ? access?.full_name ?? '' : isCoMaker ? coMakerName : name
   return (
     <Dialog open onOpenChange={(o) => !o && !sign.isPending && onClose(false)}>
       <DialogContent className="max-h-[94dvh] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>{role === 'lender' ? 'Sign as lender' : 'Witness signature (in person)'}</DialogTitle>
-          <DialogDescription>{agreement.agreement_number} — your signature will be permanently embedded in the PDF with your name and a timestamp.</DialogDescription>
+          <DialogTitle>{role === 'lender' ? 'Sign as lender' : isCoMaker ? 'Co-maker signature (in person)' : 'Witness signature (in person)'}</DialogTitle>
+          <DialogDescription>{isCoMaker ? `Hand the device to ${coMakerName || 'the co-maker'}. ` : ''}{agreement.agreement_number} — the signature will be permanently embedded in the PDF with the signer's name and a timestamp.</DialogDescription>
         </DialogHeader>
-        {role !== 'lender' && (
+        {isCoMaker && <p className="text-sm font-semibold">{coMakerName}</p>}
+        {role !== 'lender' && !isCoMaker && (
           <div className="space-y-1.5"><label className="text-sm font-medium">Witness full name</label><Input value={name} onChange={(e) => setName(e.target.value)} className="h-11" /></div>
         )}
         {!preview ? (
@@ -395,7 +421,7 @@ function InAppSignDialog({ agreement, role, onClose }: { agreement: Agreement; r
           ) : (
             <>
               <Button variant="outline" onClick={() => onClose(false)}>Cancel</Button>
-              <Button disabled={empty || (role !== 'lender' && !name.trim())} onClick={() => setPreview(pad.current?.toPng() ?? null)}>Preview signature</Button>
+              <Button disabled={empty || !signerName.trim()} onClick={() => setPreview(pad.current?.toPng() ?? null)}>Preview signature</Button>
             </>
           )}
         </DialogFooter>

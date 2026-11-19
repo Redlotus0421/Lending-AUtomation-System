@@ -148,6 +148,13 @@ export function effectiveRateText(s: Record<string, any>): string {
   return `${trimNumber(s.eir_monthly_pct, 2)}% per month (${trimNumber(s.effective_annual_rate_pct, 2)}% effective per annum)`
 }
 
+const ord = (n: number) => n + ([11, 12, 13].includes(n % 100) ? 'th' : n % 10 === 1 ? 'st' : n % 10 === 2 ? 'nd' : n % 10 === 3 ? 'rd' : 'th')
+/** " (every 5th and 20th)" for semi-monthly loans with chosen pay days */
+export function payDaysText(s: Record<string, any>): string {
+  const d = s?.pay_days
+  return Array.isArray(d) && d.length === 2 ? ` (every ${ord(Number(d[0]))} and ${ord(Number(d[1]))})` : ''
+}
+
 export function buildPlaceholderValues(d: RenderData): Record<string, string> {
   const s = d.summary
   const o = d.organization
@@ -175,7 +182,7 @@ export function buildPlaceholderValues(d: RenderData): Record<string, string> {
     loan_duration: s.term_months
       ? `${s.term_months} month${Number(s.term_months) === 1 ? '' : 's'} (${s.installment_count} ${FREQUENCY_LABEL[s.repayment_frequency] ?? s.repayment_frequency} installment${Number(s.installment_count) === 1 ? '' : 's'})`
       : durationLabel(toNumber(s.installment_count), s.repayment_frequency),
-    payment_frequency: FREQUENCY_LABEL[s.repayment_frequency] ?? s.repayment_frequency,
+    payment_frequency: (FREQUENCY_LABEL[s.repayment_frequency] ?? s.repayment_frequency) + payDaysText(s),
     installment_count: String(s.installment_count),
     installment_amount: money(s.installment_amount),
     total_interest: money(s.total_interest),
@@ -219,7 +226,7 @@ export function disclosureRows(d: RenderData): [string, string][] {
     ['Interest computation method', METHOD_LABEL[s.interest_method] ?? s.interest_method],
     ['Effective interest rate (EIR)', effectiveRateText(s)],
     ...(s.term_months ? [['Repayment period', `${s.term_months} month${Number(s.term_months) === 1 ? '' : 's'}`] as [string, string]] : []),
-    ['Number and frequency of installments', `${s.installment_count} ${FREQUENCY_LABEL[s.repayment_frequency] ?? ''} installments`],
+    ['Number and frequency of installments', `${s.installment_count} ${FREQUENCY_LABEL[s.repayment_frequency] ?? ''} installments${payDaysText(s)}`],
     ['Regular installment amount', money(s.installment_amount) + (toNumber(s.last_installment_amount) !== toNumber(s.installment_amount) ? ` (final: ${money(s.last_installment_amount)})` : '')],
     ['First / last due date', `${shortDate(s.first_due_date)} / ${shortDate(s.last_due_date)}`],
     ['Late payment charges', penaltyTerms(d.loan)],
@@ -326,7 +333,7 @@ export function sampleRenderData(org?: Record<string, any>): RenderData {
     closing_balance: 45000 - i * 5000,
   }))
   return {
-    agreement: { id: 'sample', agreement_number: 'LA-2026-000123', version: 1, kind: 'original', generated_at: new Date().toISOString(), required_signers: ['borrower', 'lender'], signing_order: 'borrower_first' },
+    agreement: { id: 'sample', agreement_number: 'LA-2026-000123', version: 1, kind: 'original', generated_at: new Date().toISOString(), required_signers: ['borrower', 'co_maker', 'lender'], signing_order: 'borrower_first' },
     organization: org ?? { name: 'Your Lending Company', address: '123 Rizal Avenue', city: 'Quezon City', province: 'Metro Manila', zip_code: '1100' },
     borrower: { full_name: 'Juan Santos Dela Cruz', address_full: '45 Mabini St., Brgy. San Roque, Marikina City, Metro Manila 1801', id_type: 'PhilSys National ID', id_number: '1234-5678-9012-3456', mobile_number: '+639171234567', email: 'juan@example.com' },
     loan: { loan_number: 'LN-2026-000123', penalty_enabled: true, penalty_type: 'percent_monthly', penalty_rate: 3, penalty_grace_days: 3, allocation_order: ['penalty', 'charges', 'interest', 'principal'] },
@@ -340,5 +347,6 @@ export function sampleRenderData(org?: Record<string, any>): RenderData {
     schedule,
     template: { title: 'Loan Agreement', body: '', settings: {} },
     officer: { full_name: 'Maria Santos' },
+    co_maker: { full_name: 'Rosa Reyes Dela Cruz', relationship: 'Spouse', mobile_number: '+639181234567', address: '45 Mabini St., Brgy. San Roque, Marikina City' },
   }
 }

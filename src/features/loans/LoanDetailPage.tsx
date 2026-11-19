@@ -17,6 +17,7 @@ import {
   DataTable, EmptyState, ErrorState, InstallmentStatusBadge, KeyValue, LoanStatusBadge, NativeSelect, PageHeader, PageLoader,
   Panel, Pill, Spinner, StatCard,
 } from '@/components/common'
+import { MoneyInput } from '@/components/common/MoneyInput'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { useAuth } from '@/features/auth/AuthProvider'
 import { AgreementPanel } from '@/features/agreements/AgreementPanel'
@@ -431,7 +432,7 @@ function NotesTab({ loan }: { loan: LoanView }) {
           {type === 'promise_to_pay' && (
             <div className="grid grid-cols-2 gap-2">
               <Input type="date" value={promiseDate} onChange={(e) => setPromiseDate(e.target.value)} className="h-10" />
-              <Input type="number" placeholder="Amount" value={promiseAmount} onChange={(e) => setPromiseAmount(e.target.value)} className="h-10" />
+              <MoneyInput placeholder="Amount" value={promiseAmount} onValueChange={setPromiseAmount} className="h-10" />
             </div>
           )}
           <Textarea rows={4} value={body} onChange={(e) => setBody(e.target.value)} placeholder="What happened?" />

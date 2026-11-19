@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ArrowLeft, Braces, Eye, History, Save, Star } from 'lucide-react'
+import { ArrowLeft, Braces, Eye, History, Save, Sparkles, Star, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -14,6 +14,7 @@ import { templatesService } from '@/services/agreements'
 import { errorMessage } from '@/lib/errors'
 import { fmtDate, fmtDateTime, num } from '@/lib/format'
 import type { AgreementTemplateVersion } from '@/types/db'
+import { AiImportDialog, type AiDraft } from './AiImportDialog'
 import {
   buildPlaceholderValues, disclosureRows, fillPlaceholders, parseTemplate, PLACEHOLDERS, sampleRenderData, type Run,
 } from '../../../supabase/functions/_shared/template.ts'
@@ -40,6 +41,14 @@ The LENDER lends the BORROWER **{{loan_amount_words}} ({{loan_amount}})** at **{
 
 export default function TemplateEditorPage() {
   const { id } = useParams()
+  return <TemplateEditor key={id} id={id ?? 'new'} />
+}
+
+/**
+ * Agreement template editor with live preview. Used as its own page and embedded in
+ * Settings -> Terms template (`embedded`), where saving a new template calls `onSaved`.
+ */
+export function TemplateEditor({ id, embedded = false, onSaved }: { id: string; embedded?: boolean; onSaved?: (id: string) => void }) {
   const isNew = id === 'new'
   const navigate = useNavigate()
   const qc = useQueryClient()
@@ -53,6 +62,16 @@ export default function TemplateEditorPage() {
   const [note, setNote] = useState('')
   const [viewing, setViewing] = useState<AgreementTemplateVersion | null>(null)
   const textarea = useRef<HTMLTextAreaElement>(null)
+  const [aiOpen, setAiOpen] = useState(false)
+  const [aiDraft, setAiDraft] = useState<(AiDraft & { file: string }) | null>(null)
+  const applyAi = (d: AiDraft, file: string) => {
+    setTitle(d.title)
+    setBody(d.body)
+    if (isNew || !name.trim()) setName(d.suggested_name)
+    setNote(`Imported from ${file} with the AI assistant`)
+    setAiDraft({ ...d, file })
+    toast.success('Draft ready — check the preview, then save')
+  }
 
   useEffect(() => {
     if (!q.data) return
@@ -75,7 +94,11 @@ export default function TemplateEditorPage() {
       setNote('')
       void qc.invalidateQueries({ queryKey: ['templates'] })
       void qc.invalidateQueries({ queryKey: ['template', r.id] })
-      if (isNew) navigate(`/agreements/templates/${r.id}`, { replace: true })
+      setAiDraft(null)
+      if (isNew) {
+        if (onSaved) onSaved(r.id)
+        else navigate(`/agreements/templates/${r.id}`, { replace: true })
+      }
     },
     onError: (e) => toast.error(errorMessage(e)),
   })
@@ -104,22 +127,52 @@ export default function TemplateEditorPage() {
 
   const groups = PLACEHOLDERS.reduce<Record<string, typeof PLACEHOLDERS>>((a, p) => ((a[p.group] ??= []).push(p), a), {})
 
+  const actions = (
+    <>
+      {!isNew && q.data?.template.is_default && <Pill tone="blue">Default</Pill>}
+      {!q.data?.template.is_default && <Button variant="outline" onClick={() => save.mutate(true)} disabled={save.isPending || !name.trim() || !title.trim() || !body.trim()}><Star /> Save & set default</Button>}
+      <Button onClick={() => save.mutate(false)} disabled={save.isPending || !name.trim() || !title.trim() || !body.trim() || (!isNew && !dirty)}>
+        {save.isPending ? <Spinner /> : <Save />} Save {isNew ? 'template' : 'new version'}
+      </Button>
+    </>
+  )
+
   return (
     <div>
-      <PageHeader
-        back={<button onClick={() => navigate('/agreements/templates')} className="mb-2 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" /> Templates</button>}
-        title={isNew ? 'New agreement template' : name || 'Template'}
-        description="Saving creates a new immutable version. Agreements already generated keep the version they were created from."
-        actions={
-          <>
-            {!isNew && q.data?.template.is_default && <Pill tone="blue">Default</Pill>}
-            {!isNew && !q.data?.template.is_default && <Button variant="outline" onClick={() => save.mutate(true)} disabled={save.isPending || !name.trim()}><Star /> Save & set default</Button>}
-            <Button onClick={() => save.mutate(false)} disabled={save.isPending || !name.trim() || !title.trim() || !body.trim() || (!isNew && !dirty)}>
-              {save.isPending ? <Spinner /> : <Save />} Save {isNew ? 'template' : 'new version'}
-            </Button>
-          </>
-        }
-      />
+      {embedded ? (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-muted-foreground">Saving creates a new version. Agreements already generated keep the version they were created from.</p>
+          <div className="flex flex-wrap items-center gap-2">{actions}</div>
+        </div>
+      ) : (
+        <PageHeader
+          back={<button onClick={() => navigate('/agreements/templates')} className="mb-2 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" /> Templates</button>}
+          title={isNew ? 'New agreement template' : name || 'Template'}
+          description="Saving creates a new immutable version. Agreements already generated keep the version they were created from."
+          actions={actions}
+        />
+      )}
+      <div className="mb-5 flex flex-col gap-3 rounded-xl border border-violet-200 bg-gradient-to-r from-violet-50 to-blue-50 p-4 sm:flex-row sm:items-center">
+        <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-white text-violet-600 shadow-sm"><Sparkles className="size-5" /></span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold">Already have your own terms?</p>
+          <p className="text-xs text-muted-foreground">Upload your loan agreement (PDF, Word, photo or text). The AI assistant reads it and writes it as a template with the right fields filled in for every loan.</p>
+        </div>
+        <Button variant="outline" className="h-11 shrink-0 bg-white" onClick={() => setAiOpen(true)}><Sparkles /> Upload terms</Button>
+      </div>
+      {aiDraft && (
+        <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+          <div className="flex items-start justify-between gap-2">
+            <p className="font-semibold">AI draft from {aiDraft.file} — not saved yet</p>
+            <button onClick={() => setAiDraft(null)} aria-label="Dismiss" className="rounded p-1 hover:bg-amber-100"><X className="size-4" /></button>
+          </div>
+          <p className="mt-1 text-xs">Read the preview carefully before saving. The assistant can make mistakes.</p>
+          {aiDraft.notes.length > 0 && (
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">{aiDraft.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>
+          )}
+        </div>
+      )}
+      <AiImportDialog open={aiOpen} onOpenChange={setAiOpen} onDraft={applyAi} />
       <div className="grid gap-5 xl:grid-cols-2">
         <div className="space-y-5">
           <Panel title="Template details">
@@ -244,12 +297,16 @@ export function TemplatePreview({ title, body, org }: { title: string; body: str
             )
             case 'signatures': return (
               <div key={i} className="mt-8 grid grid-cols-2 gap-8 font-sans text-xs">
-                {['BORROWER', 'LENDER'].map((r) => (
-                  <div key={r}>
-                    <p className="font-semibold text-[#142B4A]">{r}</p>
+                {[
+                  { label: 'BORROWER', name: data.borrower.full_name, caption: 'Signature over printed name' },
+                  ...(data.co_maker ? [{ label: 'CO-MAKER', name: data.co_maker.full_name, caption: 'Signature over printed name' }] : []),
+                  { label: 'LENDER', name: data.officer.full_name ?? '', caption: 'Authorized representative' },
+                ].map((r) => (
+                  <div key={r.label}>
+                    <p className="font-semibold text-[#142B4A]">{r.label}</p>
                     <div className="mt-10 border-b border-slate-800" />
-                    <p className="mt-1 font-serif text-sm font-semibold">{r === 'BORROWER' ? data.borrower.full_name : data.officer.full_name}</p>
-                    <p className="text-slate-500">{r === 'BORROWER' ? 'Signature over printed name' : 'Authorized representative'}</p>
+                    <p className="mt-1 font-serif text-sm font-semibold">{r.name}</p>
+                    <p className="text-slate-500">{r.caption}</p>
                   </div>
                 ))}
               </div>

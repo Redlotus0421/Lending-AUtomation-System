@@ -135,8 +135,8 @@ export async function renderAgreementPdf(data: RenderData, logo?: Uint8Array | n
             const role = signers[i + c]
             const x = w.margin.left + c * (colW + 30)
             const isLender = role === 'lender'
-            const name = role === 'borrower' ? data.borrower.full_name : isLender ? (data.officer?.full_name || '') : ''
-            const label = role === 'borrower' ? 'BORROWER' : isLender ? 'LENDER' : 'WITNESS'
+            const name = role === 'borrower' ? data.borrower.full_name : role === 'co_maker' ? (data.co_maker?.full_name || '') : isLender ? (data.officer?.full_name || '') : ''
+            const label = role === 'borrower' ? 'BORROWER' : role === 'co_maker' ? 'CO-MAKER' : isLender ? 'LENDER' : 'WITNESS'
             w.text(label, x, top - 10, { font: w.fonts.sansBold, size: 8, color: COLORS.navy })
             if (isLender) w.text(`For and on behalf of ${lenderName}`, x, top - 20, { font: w.fonts.sans, size: 7, color: COLORS.muted })
             const sigBottom = top - 82

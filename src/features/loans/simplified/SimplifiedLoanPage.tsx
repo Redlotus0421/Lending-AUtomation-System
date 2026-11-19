@@ -22,6 +22,7 @@ import {
 } from '@/components/common'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { FileDrop } from '@/components/common/FileDrop'
+import { MoneyInput } from '@/components/common/MoneyInput'
 import { PdfViewer } from '@/components/common/PdfViewer'
 import { SignaturePad, type SignaturePadHandle } from '@/components/common/SignaturePad'
 import { useAuth } from '@/features/auth/AuthProvider'
@@ -40,6 +41,7 @@ import { ReleaseDialog } from '../LoanActions'
 import { clearDraft, draftFiles, loadDraft, saveDraft, useAutosave, useWizardSteps } from '../wizard'
 import { NetReleaseTable, paymentLabel } from './shared'
 import { TransactionOptions } from './TransactionOptions'
+import { DEFAULT_PAY_DAYS, nextPayDates, PayDaysPicker, type PayDays } from '../PayDaysPicker'
 
 type StepKey = 'type' | 'borrower' | 'search' | 'balance' | 'loan' | 'review' | 'agreement'
 const STEPS: Record<TransactionType, { key: StepKey; label: string }[]> = {
@@ -93,6 +95,8 @@ type SimplifiedDraft = {
   term: string
   rate: string
   frequency?: string
+  payDays?: PayDays
+  firstDue?: string | null
   createdBorrowerId: string | null
   uploadsDone: boolean
   created: SimplifiedLoanResult | null
@@ -159,6 +163,8 @@ export default function SimplifiedLoanPage() {
   const [term, setTerm] = useState(initial?.term ?? String(settings?.simplified?.default_term ?? 6))
   const [rate, setRate] = useState(initial?.rate ?? String(settings?.interest.default_rate ?? ''))
   const [frequency, setFrequency] = useState<string>(initial?.frequency ?? settings?.repayment.default_frequency ?? 'monthly')
+  const [payDays, setPayDays] = useState<PayDays>(initial?.payDays ?? DEFAULT_PAY_DAYS)
+  const [firstDue, setFirstDue] = useState<string | null>(initial?.firstDue ?? null)
   const [created, setCreated] = useState<SimplifiedLoanResult | null>(initial?.created ?? null)
   const [agreementId, setAgreementId] = useState<string | null>(initial?.agreementId ?? null)
 
@@ -194,7 +200,7 @@ export default function SimplifiedLoanPage() {
   // autosave everything typed so far (sessionStorage: this tab only, cleared on sign-out)
   const borrowerValues = useWatch({ control: form.control }) as BorrowerDraft
   const draft: SimplifiedDraft = {
-    v: 1, step, type, borrower: { ...EMPTY_BORROWER, ...borrowerValues }, borrowerId, principal, term, rate, frequency,
+    v: 1, step, type, borrower: { ...EMPTY_BORROWER, ...borrowerValues }, borrowerId, principal, term, rate, frequency, payDays, firstDue,
     createdBorrowerId, uploadsDone, created, agreementId,
   }
   const [finished, setFinished] = useState(false)
@@ -212,6 +218,8 @@ export default function SimplifiedLoanPage() {
     setTerm(String(settings?.simplified?.default_term ?? 6))
     setRate(String(settings?.interest.default_rate ?? ''))
     setFrequency(settings?.repayment.default_frequency ?? 'monthly')
+    setPayDays(DEFAULT_PAY_DAYS)
+    setFirstDue(null)
     setCreated(null)
     setAgreementId(null)
     setRestored(false)
@@ -235,15 +243,19 @@ export default function SimplifiedLoanPage() {
     if (!type || !(p > 0) || !Number.isInteger(t) || t < 1 || t > 360) return null
     if (type === 'renewal' && !borrowerId) return null
     const r = Number(rate)
+    const semi = frequency === 'semimonthly'
     return {
       transaction_type: type,
       borrower_id: type === 'renewal' ? borrowerId! : undefined,
       principal: Math.round(p * 100) / 100,
       term_months: t,
       repayment_frequency: frequency,
+      pay_days: semi ? payDays : undefined,
+      // a saved first payment date that is no longer offered (e.g. a draft resumed days later) falls back to the earliest
+      first_due_date: semi && firstDue && nextPayDates(payDays).includes(firstDue) ? firstDue : null,
       interest_rate: allowOverride && rate !== '' && Number.isFinite(r) ? r : null,
     }
-  }, [type, principal, term, rate, frequency, borrowerId, allowOverride])
+  }, [type, principal, term, rate, frequency, payDays, firstDue, borrowerId, allowOverride])
 
   // Browser history can land on any step: send it to the nearest step whose data exists.
   useEffect(() => {
@@ -334,6 +346,7 @@ export default function SimplifiedLoanPage() {
       {step === 'loan' && type && (
         <LoanStep type={type} principal={principal} setPrincipal={setPrincipal} term={term} setTerm={setTerm} rate={rate} setRate={setRate}
           frequency={frequency} setFrequency={setFrequency}
+          payDays={payDays} setPayDays={setPayDays} firstDue={firstDue} setFirstDue={setFirstDue}
           allowOverride={allowOverride} borrowerName={borrowerName} preview={preview.data} previewError={input ? preview.error : null}
           fetching={preview.isFetching} fresh={previewFresh}
           onBack={() => back(type === 'new' ? 'borrower' : 'balance')}
@@ -708,12 +721,14 @@ function BalanceStep({ data, onBack, onNext }: { data: SimplifiedBorrowerStatus;
 }
 
 // ---------------------------------------------------------------------------
-function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate, frequency, setFrequency, allowOverride, borrowerName, preview, previewError, fetching, fresh, onBack, onNext }: {
+function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate, frequency, setFrequency, payDays, setPayDays, firstDue, setFirstDue, allowOverride, borrowerName, preview, previewError, fetching, fresh, onBack, onNext }: {
   type: TransactionType
   principal: string; setPrincipal: (v: string) => void
   term: string; setTerm: (v: string) => void
   rate: string; setRate: (v: string) => void
   frequency: string; setFrequency: (v: string) => void
+  payDays: PayDays; setPayDays: (v: PayDays) => void
+  firstDue: string | null; setFirstDue: (v: string | null) => void
   allowOverride: boolean
   borrowerName: string
   preview: SimplifiedPreview | undefined
@@ -734,7 +749,7 @@ function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate,
         <Panel title={type === 'renewal' ? 'New loan details' : 'Loan details'} description={borrowerName ? `For ${borrowerName}` : undefined}>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label={type === 'renewal' ? 'New loan amount (₱)' : 'Loan amount (₱)'} required>
-              <Input autoFocus type="number" inputMode="decimal" min="0" step="0.01" placeholder="20,000.00" className="h-12 text-lg" value={principal} onChange={(e) => setPrincipal(e.target.value)} />
+              <MoneyInput placeholder="20,000.00" className="h-12 text-lg" value={principal} onValueChange={setPrincipal} />
             </Field>
             {enabled.length > 1 && (
               <Field label="Collection / payment frequency" className="sm:col-span-2">
@@ -747,6 +762,11 @@ function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate,
                   ))}
                 </div>
               </Field>
+            )}
+            {freq === 'semimonthly' && (
+              <div className="sm:col-span-2">
+                <PayDaysPicker value={payDays} onChange={setPayDays} firstDue={firstDue} onFirstDueChange={setFirstDue} />
+              </div>
             )}
             <Field label="Repayment period (months)" required
               error={term !== '' && !(Number.isInteger(n) && n >= 1 && n <= 360) ? 'Enter a whole number of months from 1 to 360' : undefined}
@@ -804,7 +824,7 @@ function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate,
 
 /** Hint under the months field: how many collections the period produces (from the server preview when available). */
 function installmentsHint(freq: string, months: number, preview: SimplifiedPreview | undefined) {
-  if (!(Number.isInteger(months) && months > 0)) return freq === 'semimonthly' ? 'Collected twice a month, e.g. 15th and 30th' : undefined
+  if (!(Number.isInteger(months) && months > 0)) return freq === 'semimonthly' ? 'Collected twice a month on the pay days above' : undefined
   const s = preview?.summary
   if (s && s.term_months === months && s.repayment_frequency === freq) {
     return `${s.installment_count} ${FREQUENCY_LABEL[freq] ?? freq} payment${s.installment_count === 1 ? '' : 's'}`
@@ -991,6 +1011,9 @@ function AgreementStep({ loan, agreementId, borrowerName, onFinished }: { loan: 
   const pdfPath = a ? a.signed_pdf_path ?? a.current_pdf_path ?? a.unsigned_pdf_path : null
   const pdf = useQuery({ queryKey: ['agreement', agreementId, 'pdf', pdfPath], queryFn: () => agreementsService.pdfUrl(pdfPath!), enabled: !!pdfPath })
   const loanView = useQuery({ queryKey: ['loan', loan.id], queryFn: () => loansService.get(loan.id) })
+  const borrowerId = loanView.data?.borrower_id
+  const guarantors = useQuery({ queryKey: ['borrower', borrowerId, 'guarantors'], queryFn: () => borrowersService.guarantors(borrowerId!), enabled: !!borrowerId })
+  const coMakerName = guarantors.data?.at(-1)?.full_name ?? ''
   const [releaseOpen, setReleaseOpen] = useState(false)
   const fullySigned = agreement.data?.status === 'fully_signed'
   useEffect(() => { if (fullySigned) onFinished() }, [fullySigned]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -999,7 +1022,8 @@ function AgreementStep({ loan, agreementId, borrowerName, onFinished }: { loan: 
   if (agreement.error || !a) return <ErrorState error={agreement.error ?? 'Agreement not found'} onRetry={() => void agreement.refetch()} />
 
   const signed = new Set((signatures.data ?? []).map((s) => s.signer_role))
-  const order = a.signing_order === 'lender_first' ? ['lender', 'borrower'] : ['borrower', 'lender']
+  // the co-maker signs right after the borrower, while the device is still with them
+  const order = a.signing_order === 'lender_first' ? ['lender', 'borrower', 'co_maker'] : ['borrower', 'co_maker', 'lender']
   const pending = order.filter((r) => a.required_signers.includes(r) && !signed.has(r))
   const next = pending[0]
   const othersPending = a.required_signers.filter((r) => !signed.has(r) && !order.includes(r))
@@ -1041,6 +1065,15 @@ function AgreementStep({ loan, agreementId, borrowerName, onFinished }: { loan: 
             : <Panel title="Borrower signature"><p className="text-sm text-muted-foreground">Your role cannot collect signatures.</p></Panel>
         )}
 
+        {!done && next === 'co_maker' && (
+          can('agreements.generate')
+            ? <SignBox key="co_maker" title="Co-maker signature" signerName={coMakerName} agreementNumber={a.agreement_number}
+                consent={`I, ${coMakerName || 'the co-maker'}, have reviewed loan agreement ${a.agreement_number} of ${borrowerName}, including the loan amount, interest, total repayment and the payment schedule, and I sign it electronically as co-maker. My electronic signature has the same legal effect as a handwritten signature (R.A. 8792).`}
+                sign={(png) => agreementsService.signInApp({ agreement_id: a.id, role: 'co_maker', signature: png, in_person: true })}
+                onSigned={refresh} hint="Now hand the device to the co-maker. They sign with a finger or stylus." />
+            : <Panel title="Co-maker signature"><p className="text-sm text-muted-foreground">Your role cannot collect signatures.</p></Panel>
+        )}
+
         {!done && next === 'lender' && (
           can('agreements.sign_lender')
             ? <SignBox key="lender" title="Lender signature" signerName={access?.full_name ?? ''} agreementNumber={a.agreement_number}
@@ -1076,7 +1109,7 @@ function AgreementStep({ loan, agreementId, borrowerName, onFinished }: { loan: 
 
         <div className="grid gap-2">
           <Button variant="outline" className="h-11" onClick={() => navigate(`/loans/${loan.id}`)}>Open loan {loan.loan_number} <ArrowRight /></Button>
-          {!done && next === 'borrower' && (
+          {!done && (next === 'borrower' || next === 'co_maker') && (
             <Button variant="ghost" className="h-11" onClick={() => navigate(`/loans/${loan.id}?tab=agreement`)}><Smartphone /> Send a signing link instead</Button>
           )}
         </div>

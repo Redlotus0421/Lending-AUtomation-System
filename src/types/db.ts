@@ -174,6 +174,7 @@ export interface Loan {
   term_count: number
   release_date: string
   first_due_date: string
+  pay_days?: number[] | null
   maturity_date: string
   processing_fee_type: string
   processing_fee_value: Money
@@ -283,6 +284,7 @@ export interface LoanSummary {
   duration_label: string
   release_date: string
   first_due_date: string
+  pay_days?: number[] | null
   last_due_date: string
   annual_nominal_rate: Money
   periodic_rate: Money
@@ -617,6 +619,8 @@ export interface Settings {
     default_template_id: string | null; signing_order: 'borrower_first' | 'lender_first' | 'any'
     require_lender_signature: boolean; witness_count: number; identity_verification: 'none' | 'dob' | 'id_last4'
     link_expiry_hours: number
+    /** the borrower's co-maker signs too (default true) */
+    require_co_maker_signature?: boolean
   }
   security: { session_timeout_minutes: number; password_min_length: number; audit_logging: boolean }
   receipt: { footer_note: string }

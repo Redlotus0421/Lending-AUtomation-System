@@ -17,6 +17,10 @@ export type SimplifiedLoanInput = {
   term_count?: number
   /** one of the frequencies enabled in the business settings; defaults to the business default */
   repayment_frequency?: string
+  /** semi-monthly only: the two pay days of the month, e.g. [5, 20] */
+  pay_days?: [number, number]
+  /** semi-monthly only: a later pay date for the first payment (null = earliest) */
+  first_due_date?: string | null
   interest_rate?: number | null
   purpose?: string | null
 }

@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Field, NativeSelect, Spinner } from '@/components/common'
+import { MoneyInput } from '@/components/common/MoneyInput'
 import { loansService } from '@/services/loans'
 import { usersService } from '@/services/org'
 import { paymentsService } from '@/services/payments'
@@ -184,7 +185,7 @@ export function AdjustmentDialog({ loan, open, onOpenChange, onDone, installment
           </NativeSelect>
         </Field>
         <Field label="Amount (₱)" hint={Number.isFinite(max) ? `Up to ${peso(max)}` : undefined}>
-          <Input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} className="h-10" />
+          <MoneyInput value={amount} onValueChange={setAmount} className="h-10" />
         </Field>
         <Field label="Reason" required><Textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
         <DialogFooter>

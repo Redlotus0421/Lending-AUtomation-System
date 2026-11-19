@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
-  ArrowDown, ArrowUp, Building2, Database, FileSignature, ImagePlus, Info, Lock, Percent, Receipt, Save, ShieldCheck, Timer, Wallet, Zap,
+  ArrowDown, ArrowUp, Building2, Database, ExternalLink, FileSignature, ImagePlus, Info, Lock, Percent, Receipt, Save, ScrollText, ShieldCheck, Timer, Wallet, Zap,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -19,6 +19,7 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { useAuth } from '@/features/auth/AuthProvider'
 import { orgService } from '@/services/org'
 import { templatesService } from '@/services/agreements'
+import { TemplateEditor } from '@/features/agreements/TemplateEditorPage'
 import { FREQUENCIES, PENALTY_TYPES, RATE_PERIODS } from '@/lib/constants'
 import { errorMessage } from '@/lib/errors'
 import type { Settings } from '@/types/db'
@@ -80,8 +81,8 @@ export default function SettingsPage() {
   if (!canSettings) {
     return (
       <div>
-        <PageHeader title="Settings" description="Your role can manage agreement templates." />
-        <TemplatesLinkCard />
+        <PageHeader title="Settings" description="Your role can manage the terms (agreement) templates." />
+        <TermsTemplateSection />
       </div>
     )
   }
@@ -95,6 +96,7 @@ export default function SettingsPage() {
     { value: 'repayment', label: 'Repayment', icon: <Wallet /> },
     { value: 'penalty', label: 'Late payments', icon: <Timer /> },
     { value: 'agreement', label: 'Agreements', icon: <FileSignature /> },
+    ...(can('templates.manage') ? [{ value: 'terms', label: 'Terms template', icon: <ScrollText /> }] : []),
     { value: 'simplified', label: 'Simplified lending', icon: <Zap /> },
     { value: 'receipt', label: 'Receipts', icon: <Receipt /> },
     { value: 'security', label: 'Security', icon: <ShieldCheck /> },
@@ -116,6 +118,7 @@ export default function SettingsPage() {
           <TabsContent value="repayment"><RepaymentSection value={s.repayment} /></TabsContent>
           <TabsContent value="penalty"><PenaltySection value={s.penalty} /></TabsContent>
           <TabsContent value="agreement"><AgreementSection value={s.agreement} /></TabsContent>
+          {can('templates.manage') && <TabsContent value="terms"><TermsTemplateSection /></TabsContent>}
           <TabsContent value="simplified"><SimplifiedSection value={s.simplified ?? { allow_rate_override: false, default_term: 6, processing_fee_type: 'none', processing_fee_value: 0, approve_on_create: true }} settings={s} /></TabsContent>
           <TabsContent value="receipt"><ReceiptSection value={s.receipt} /></TabsContent>
           <TabsContent value="security"><SecuritySection value={s.security} /></TabsContent>
@@ -449,6 +452,33 @@ function PenaltySection({ value }: { value: Settings['penalty'] }) {
 }
 
 // ---------------------------------------------------------------------------
+/** Edit the terms printed on every loan agreement, with a live preview (Settings -> Terms template). */
+function TermsTemplateSection() {
+  const templates = useQuery({ queryKey: ['templates'], queryFn: templatesService.list })
+  const [picked, setPicked] = useState<string | null>(null)
+  if (templates.isLoading) return <PageLoader />
+  if (templates.error) return <ErrorState error={templates.error} onRetry={() => void templates.refetch()} />
+  const list = templates.data ?? []
+  const fallback = list.find((t) => t.is_default && t.is_active) ?? list.find((t) => t.is_active) ?? list[0]
+  const selected = picked ?? fallback?.id ?? 'new'
+  return (
+    <div className="space-y-4">
+      <Panel>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <Field label="Template to edit" className="min-w-0 flex-1" hint="The default template is used for new agreements unless a loan product names another one.">
+            <NativeSelect value={selected} onChange={(e) => setPicked(e.target.value)}>
+              {list.map((t) => <option key={t.id} value={t.id}>{t.name}{t.is_default ? ' (default)' : ''}{t.is_active ? '' : ' — inactive'}</option>)}
+              <option value="new">+ New template</option>
+            </NativeSelect>
+          </Field>
+          <Button asChild variant="ghost" className="h-10"><Link to="/agreements/templates">All templates <ExternalLink /></Link></Button>
+        </div>
+      </Panel>
+      <TemplateEditor key={selected} id={selected} embedded onSaved={(id) => setPicked(id)} />
+    </div>
+  )
+}
+
 function TemplatesLinkCard() {
   return (
     <Panel>
@@ -513,6 +543,10 @@ function AgreementSection({ value }: { value: Settings['agreement'] }) {
           <div className="sm:col-span-2">
             <Toggle label="Require lender signature" description="Both borrower and lender must sign before the loan can be released."
               checked={v.require_lender_signature} onChange={(x) => setV({ ...v, require_lender_signature: x })} />
+          </div>
+          <div className="sm:col-span-2">
+            <Toggle label="Co-maker signs the agreement" description="When the borrower has a co-maker on file, the co-maker must also sign — in person on your device or through a signing link."
+              checked={v.require_co_maker_signature !== false} onChange={(x) => setV({ ...v, require_co_maker_signature: x })} />
           </div>
         </div>
         <SaveBar saving={saving} onSave={onSave} />

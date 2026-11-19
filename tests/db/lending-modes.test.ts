@@ -34,11 +34,24 @@ async function signInPerson(loan: string) {
     agreement_id: id, signer_role: 'borrower', signer_name: 'Borrower', verification_method: 'in_person', witnessed_by: owner,
     image_path: `${org}/${id}/b.png`, image_hash: 'hb', consent_text: 'I agree' })])
   expect(b.duplicate).toBe(false)
+  let n = 1
   await svc(`select public.agreement_set_pdf($1, 'p1.pdf', 'h1', 1) as r`, [id])
+  if ((data.agreement.required_signers as string[]).includes('co_maker')) {
+    // the co-maker also signs in person, witnessed by staff
+    await expect(svc(`select public.signature_commit($1::jsonb) as r`, [JSON.stringify({
+      agreement_id: id, signer_role: 'co_maker', signer_name: 'X', image_path: 'x', image_hash: 'x', consent_text: 'c' })])).rejects.toThrow(/co-maker signs/)
+    await svc(`select public.signature_commit($1::jsonb) as r`, [JSON.stringify({
+      agreement_id: id, signer_role: 'co_maker', signer_name: data.co_maker.full_name, verification_method: 'in_person', witnessed_by: owner,
+      image_path: `${org}/${id}/c.png`, image_hash: 'hc', consent_text: 'I agree' })])
+    n++
+    const mid = await svc<any>(`select public.agreement_set_pdf($1, 'pc.pdf', 'hc', ${n}) as r`, [id])
+    expect(mid.finalized).toBe(false)
+  }
   await svc(`select public.signature_commit($1::jsonb) as r`, [JSON.stringify({
     agreement_id: id, signer_role: 'lender', signer_name: 'Maria Santos', signer_user_id: owner,
     image_path: `${org}/${id}/l.png`, image_hash: 'hl', consent_text: 'I agree' })])
-  const fin = await svc<any>(`select public.agreement_set_pdf($1, 'p2.pdf', 'h2', 2) as r`, [id])
+  n++
+  const fin = await svc<any>(`select public.agreement_set_pdf($1, 'p2.pdf', 'h2', ${n}) as r`, [id])
   expect(fin.finalized).toBe(true)
   return { id, data }
 }
@@ -143,6 +156,8 @@ describe('simplified new loan', () => {
   it('includes the co-maker in the agreement data and releases after an in-person signature', async () => {
     const { data } = await signInPerson(simpleLoan)
     expect(data.co_maker.full_name).toBe('Ben Lim')
+    // a borrower with a co-maker on file: the co-maker is a required signer
+    expect(data.agreement.required_signers).toEqual(['borrower', 'co_maker', 'lender'])
     expect(data.renewal).toBeNull()
     const sigs = await q(owner, `select verification_method from public.agreement_signatures s join public.loan_agreements a on a.id = s.agreement_id
       where a.loan_id = $1 and s.signer_role = 'borrower'`, [simpleLoan])
@@ -255,5 +270,30 @@ describe('reloan / renew', () => {
     const r = await rpc<any>(owner, 'create_simplified_loan', { p: JSON.stringify({ transaction_type: 'renewal', borrower_id: c, principal: 8000, term_count: 2 }) })
     expect(Number(r.renewal_deduction)).toBe(0)
     expect((await q(owner, `select count(*)::int as n from public.loan_renewals where new_loan_id = $1`, [r.id]))[0].n).toBe(0)
+  })
+})
+
+describe('co-maker signature', () => {
+  it('creates a co-maker signing link with the name from the borrower record, and can be turned off', async () => {
+    // a fresh borrower with a co-maker on file
+    const bor = (await q(owner, `insert into public.borrowers (first_name, last_name, mobile_number) values ('Carla', 'Diaz', '09175550000') returning id`))[0].id
+    await q(owner, `insert into public.guarantors (borrower_id, full_name, relationship, mobile_number) values ($1, 'Dan Diaz', 'Brother', '09176660000')`, [bor])
+    const l = await rpc<any>(owner, 'create_simplified_loan', { p: JSON.stringify({ transaction_type: 'new', borrower_id: bor, principal: 5000, term_count: 2 }) })
+    const data = await rpc<any>(owner, 'agreement_begin', { p_loan_id: l.id })
+    const id = data.agreement.id
+    expect(data.agreement.required_signers).toContain('co_maker')
+    await asService(db, () => db.query(`select public.agreement_complete($1, $2, 'h0', '{}'::jsonb, 3, '{}'::jsonb, 'body')`, [id, `${org}/${id}/u.pdf`]))
+    const link = await rpc<any>(owner, 'signing_session_create', { p_agreement_id: id, p_signer_role: 'co_maker', p_signer_name: 'Someone Else' })
+    expect(link.signer_name).toBe('Dan Diaz')
+    const sess = (await q(owner, `select signer_contact from public.agreement_signing_sessions where id = $1`, [link.session_id]))[0]
+    expect(sess.signer_contact).toBe('09176660000')
+
+    // turning the setting off: new agreements no longer ask for the co-maker
+    await rpc(owner, 'update_settings', { p_section: 'agreement', p_values: JSON.stringify({ require_co_maker_signature: false }) })
+    await rpc(owner, 'cancel_loan', { p_loan_id: l.id, p_reason: 'Test' })
+    const l2 = await rpc<any>(owner, 'create_simplified_loan', { p: JSON.stringify({ transaction_type: 'new', borrower_id: bor, principal: 5000, term_count: 2 }) })
+    const d2 = await rpc<any>(owner, 'agreement_begin', { p_loan_id: l2.id })
+    expect(d2.agreement.required_signers).not.toContain('co_maker')
+    await rpc(owner, 'update_settings', { p_section: 'agreement', p_values: JSON.stringify({ require_co_maker_signature: true }) })
   })
 })
