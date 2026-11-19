@@ -1,6 +1,8 @@
 // Platform (super admin) console API. Read models and status changes are SQL RPCs that check
 // platform_admins; creating logins goes through the platform-admin Edge Function (service role).
-import type { AccountStatus, AppRole, LendingMode, PlatformOrg, PlatformOrgDetail, PlatformOverview } from '@/types/db'
+import type {
+  AccountStatus, AgreementTemplate, AgreementTemplateVersion, AppRole, LendingMode, PlatformOrg, PlatformOrgDetail, PlatformOverview,
+} from '@/types/db'
 import { invoke, rpc } from './api'
 
 export type NewAccount = {
@@ -39,6 +41,16 @@ export const platformService = {
   /** Decides which loan-creation workflow every user of the business gets. */
   setLendingMode: (id: string, mode: LendingMode) =>
     rpc<PlatformOrgDetail>('platform_set_lending_mode', { p_org: id, p_mode: mode }),
+  // ----- agreement / terms templates of a lender account
+  listTemplates: (orgId: string) =>
+    rpc<(AgreementTemplate & { current: AgreementTemplateVersion | null })[]>('platform_list_templates', { p_org: orgId }),
+  getTemplate: (orgId: string, id: string) =>
+    rpc<{ template: AgreementTemplate; versions: AgreementTemplateVersion[] }>('platform_get_template', { p_org: orgId, p_template_id: id }),
+  saveTemplate: (orgId: string, p: Record<string, unknown>) =>
+    rpc<{ id: string; version_id: string; version_no: number }>('platform_save_template', { p_org: orgId, p }),
+  setDefaultTemplate: (orgId: string, id: string) => rpc('platform_set_default_template', { p_org: orgId, p_template_id: id }),
+  setTemplateActive: (orgId: string, id: string, active: boolean) =>
+    rpc('platform_set_template_active', { p_org: orgId, p_template_id: id, p_active: active }),
   createAccount: (a: NewAccount) =>
     invoke<{ organization_id: string; user_id: string; email: string }>('platform-admin', { action: 'create_account', ...a }),
   addUser: (u: NewAccountUser) => invoke<{ user_id: string; email: string }>('platform-admin', { action: 'add_user', ...u }),

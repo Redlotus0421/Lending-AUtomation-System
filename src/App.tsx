@@ -33,6 +33,7 @@ const AuditLogsPage = lazy(() => import('@/features/audit/AuditLogsPage'))
 const AdminOverviewPage = lazy(() => import('@/features/admin/AdminOverviewPage'))
 const AccountsPage = lazy(() => import('@/features/admin/AccountsPage'))
 const AccountDetailPage = lazy(() => import('@/features/admin/AccountDetailPage'))
+const AccountTemplatePage = lazy(() => import('@/features/admin/AccountTemplates'))
 
 function Protected({ children }: { children: ReactNode }) {
   const { loading, session, access } = useAuth()
@@ -70,6 +71,7 @@ export default function App() {
           <Route index element={<AdminOverviewPage />} />
           <Route path="accounts" element={<AccountsPage />} />
           <Route path="accounts/:id" element={<AccountDetailPage />} />
+          <Route path="accounts/:id/templates/:templateId" element={<AccountTemplatePage />} />
           <Route path="profile" element={<ProfilePage />} />
           <Route path="*" element={<Navigate to="/admin" replace />} />
         </Route>

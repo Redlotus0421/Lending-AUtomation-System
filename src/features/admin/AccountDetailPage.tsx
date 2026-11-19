@@ -18,6 +18,7 @@ import type { LendingMode, PlatformMember, PlatformOrgDetail } from '@/types/db'
 import {
   AccountStatusPill, AddUserDialog, CredentialsDialog, LENDING_MODES, LendingModePicker, LendingModePill, ResetPasswordDialog, type Credentials,
 } from './dialogs'
+import { AccountTemplatesPanel } from './AccountTemplates'
 
 const ROLE_TONE: Record<string, 'navy' | 'blue' | 'teal' | 'amber'> = { owner: 'navy', admin: 'blue', loan_officer: 'teal', collector: 'amber' }
 
@@ -97,6 +98,8 @@ export default function AccountDetailPage() {
       </div>
 
       <LendingModePanel key={o.lending_mode} org={o} onChanged={() => void refresh()} />
+
+      <AccountTemplatesPanel org={o} />
 
       <div className="grid gap-5 lg:grid-cols-[1fr_1.6fr]">
         <Panel title="Business details">

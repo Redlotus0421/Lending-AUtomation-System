@@ -13,7 +13,7 @@ import { useAuth } from '@/features/auth/AuthProvider'
 import { templatesService } from '@/services/agreements'
 import { errorMessage } from '@/lib/errors'
 import { fmtDate, fmtDateTime, num } from '@/lib/format'
-import type { AgreementTemplateVersion } from '@/types/db'
+import type { AgreementTemplate, AgreementTemplateVersion } from '@/types/db'
 import { AiImportDialog, type AiDraft } from './AiImportDialog'
 import {
   buildPlaceholderValues, disclosureRows, fillPlaceholders, parseTemplate, PLACEHOLDERS, sampleRenderData, type Run,
@@ -44,16 +44,32 @@ export default function TemplateEditorPage() {
   return <TemplateEditor key={id} id={id ?? 'new'} />
 }
 
+type SaveInput = Parameters<typeof templatesService.save>[0]
+/** Where templates are read from and saved to: the signed-in lender (default) or a lender account managed by the platform admin. */
+export type TemplateSource = {
+  /** query-key prefix for this account's templates */
+  key: readonly unknown[]
+  get: (id: string) => Promise<{ template: AgreementTemplate; versions: AgreementTemplateVersion[] }>
+  save: (p: SaveInput) => Promise<{ id: string; version_id: string; version_no: number }>
+  /** business shown in the preview letterhead */
+  organization?: Record<string, any> | null
+}
+const LENDER_SOURCE: TemplateSource = { key: ['templates'], get: (id) => templatesService.get(id), save: (p) => templatesService.save(p) }
+
 /**
- * Agreement template editor with live preview. Used as its own page and embedded in
- * Settings -> Terms template (`embedded`), where saving a new template calls `onSaved`.
+ * Agreement template editor with live preview. Used as its own page, embedded in
+ * Settings -> Terms template and in the platform admin's account page (`embedded`, `source`).
+ * Saving a new template calls `onSaved` when given.
  */
-export function TemplateEditor({ id, embedded = false, onSaved }: { id: string; embedded?: boolean; onSaved?: (id: string) => void }) {
+export function TemplateEditor({ id, embedded = false, onSaved, source = LENDER_SOURCE }: {
+  id: string; embedded?: boolean; onSaved?: (id: string) => void; source?: TemplateSource
+}) {
   const isNew = id === 'new'
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const { organization } = useAuth()
-  const q = useQuery({ queryKey: ['template', id], queryFn: () => templatesService.get(id!), enabled: !isNew })
+  const { organization: myOrg } = useAuth()
+  const organization = source.organization ?? myOrg
+  const q = useQuery({ queryKey: [...source.key, 'template', id], queryFn: () => source.get(id!), enabled: !isNew })
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [title, setTitle] = useState('Loan Agreement')
@@ -86,14 +102,13 @@ export function TemplateEditor({ id, embedded = false, onSaved }: { id: string; 
   }, [q.data])
 
   const save = useMutation({
-    mutationFn: (asDefault: boolean) => templatesService.save({
+    mutationFn: (asDefault: boolean) => source.save({
       id: isNew ? undefined : id, name, description, title, body, settings, change_note: note || undefined, is_default: asDefault || undefined,
     }),
     onSuccess: (r) => {
       toast.success(`Saved as version ${r.version_no}`)
       setNote('')
-      void qc.invalidateQueries({ queryKey: ['templates'] })
-      void qc.invalidateQueries({ queryKey: ['template', r.id] })
+      void qc.invalidateQueries({ queryKey: source.key })
       setAiDraft(null)
       if (isNew) {
         if (onSaved) onSaved(r.id)

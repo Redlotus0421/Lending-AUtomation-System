@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  BarChart3, Bell, CalendarClock, ClipboardList, FileSignature, HandCoins, LayoutDashboard, LogOut, Menu, Package,
+  BarChart3, Bell, CalendarClock, ClipboardList, FileSignature, FileText, HandCoins, LayoutDashboard, LogOut, Menu, Package,
   PlusCircle, ScrollText, Settings, ShieldAlert, ShieldCheck, UserCog, Users, Wallet,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -31,7 +31,8 @@ export const NAV: { section: string; items: NavItem[] }[] = [
       { to: '/borrowers', label: 'Borrowers', icon: <Users />, perm: 'borrowers.view' },
       { to: '/applications', label: 'Loan Applications', icon: <ClipboardList />, perm: 'loans.view' },
       { to: '/loans', label: 'Active Loans', icon: <HandCoins />, perm: 'loans.view', end: false },
-      { to: '/agreements', label: 'Loan Agreements', icon: <FileSignature />, perm: 'agreements.view' },
+      { to: '/agreements', label: 'Loan Agreements', icon: <FileSignature />, perm: 'agreements.view', end: true },
+      { to: '/agreements/templates', label: 'Terms Templates', icon: <FileText />, perm: 'templates.manage' },
     ],
   },
   {
