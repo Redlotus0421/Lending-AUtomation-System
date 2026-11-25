@@ -89,13 +89,14 @@ export function StatCard({ label, value, hint, icon, tone = 'blue', onClick, cla
   return (
     <div
       onClick={onClick}
-      className={cn('rounded-xl border bg-card p-4 shadow-card transition', onClick && 'cursor-pointer hover:border-blue-200 hover:shadow-md', className)}
+      className={cn('@container min-w-0 rounded-xl border bg-card p-4 shadow-card transition', onClick && 'cursor-pointer hover:border-blue-200 hover:shadow-md', className)}
     >
       <div className="flex items-start justify-between gap-3">
         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
         {icon && <span className={cn('grid size-8 shrink-0 place-items-center rounded-lg [&_svg]:size-4', tones[tone])}>{icon}</span>}
       </div>
-      <p className="tabular mt-2 text-xl font-semibold tracking-tight text-[#0f1b2d] sm:text-2xl">{value}</p>
+      {/* the amount scales with the card's own width (container units), so ₱1,234,567.89 fits a narrow card */}
+      <p className="tabular mt-2 whitespace-nowrap text-[clamp(0.95rem,11.5cqi,1.5rem)] font-semibold leading-tight tracking-tight text-[#0f1b2d]">{value}</p>
       {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
     </div>
   )

@@ -42,6 +42,7 @@ import { clearDraft, draftFiles, loadDraft, saveDraft, useAutosave, useWizardSte
 import { NetReleaseTable, paymentLabel } from './shared'
 import { TransactionOptions } from './TransactionOptions'
 import { DEFAULT_PAY_DAYS, nextPayDates, PayDaysPicker, type PayDays } from '../PayDaysPicker'
+import { CollectionDatePicker, validFirstDue } from '../CollectionDatePicker'
 
 type StepKey = 'type' | 'borrower' | 'search' | 'balance' | 'loan' | 'review' | 'agreement'
 const STEPS: Record<TransactionType, { key: StepKey; label: string }[]> = {
@@ -252,7 +253,7 @@ export default function SimplifiedLoanPage() {
       repayment_frequency: frequency,
       pay_days: semi ? payDays : undefined,
       // a saved first payment date that is no longer offered (e.g. a draft resumed days later) falls back to the earliest
-      first_due_date: semi && firstDue && nextPayDates(payDays).includes(firstDue) ? firstDue : null,
+      first_due_date: semi ? (firstDue && nextPayDates(payDays).includes(firstDue) ? firstDue : null) : validFirstDue(firstDue),
       interest_rate: allowOverride && rate !== '' && Number.isFinite(r) ? r : null,
     }
   }, [type, principal, term, rate, frequency, payDays, firstDue, borrowerId, allowOverride])
@@ -755,7 +756,7 @@ function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate,
               <Field label="Collection / payment frequency" className="sm:col-span-2">
                 <div role="radiogroup" aria-label="Payment frequency" className="flex flex-wrap gap-2">
                   {enabled.map((f) => (
-                    <button key={f.value} type="button" role="radio" aria-checked={freq === f.value} onClick={() => setFrequency(f.value)}
+                    <button key={f.value} type="button" role="radio" aria-checked={freq === f.value} onClick={() => { if (f.value !== freq) { setFrequency(f.value); setFirstDue(null) } }}
                       className={cn('h-11 rounded-lg border-2 px-4 text-sm font-medium transition', freq === f.value ? 'border-[#2563EB] bg-blue-50 text-[#142B4A]' : 'border-slate-200 hover:border-slate-300')}>
                       {f.label}
                     </button>
@@ -766,6 +767,11 @@ function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate,
             {freq === 'semimonthly' && (
               <div className="sm:col-span-2">
                 <PayDaysPicker value={payDays} onChange={setPayDays} firstDue={firstDue} onFirstDueChange={setFirstDue} />
+              </div>
+            )}
+            {(freq === 'monthly' || freq === 'weekly' || freq === 'daily') && (
+              <div className="sm:col-span-2">
+                <CollectionDatePicker frequency={freq} value={firstDue} onChange={setFirstDue} />
               </div>
             )}
             <Field label="Repayment period (months)" required
