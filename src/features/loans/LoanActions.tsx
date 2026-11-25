@@ -212,7 +212,9 @@ export function RescheduleDialog({ loan, open, onOpenChange, onDone }: Props) {
   const dueInterest = inst.data?.filter((i) => i.due_date <= today).reduce((a, i) => a + toNumber(i.interest_due) - toNumber(i.interest_paid) - toNumber(i.interest_waived), 0) ?? 0
   const openCharges = inst.data?.reduce((a, i) => a + toNumber(i.charges_due) - toNumber(i.charges_paid) - toNumber(i.charges_waived), 0) ?? 0
   const newPrincipal = toNumber(loan.outstanding_principal) + dueInterest + openCharges
-  const params = { principal: Math.round(newPrincipal * 100) / 100, interest_method: method as 'flat', interest_rate: Number(rate), rate_period: period, repayment_frequency: freq, term_count: Number(term), release_date: today, first_due_date: firstDue || null, processing_fee_type: 'none' as const, processing_fee_value: 0, other_charges: 0, charges_treatment: 'added' as const, penalty_enabled: false }
+  // same inputs reschedule_loan uses: the loan's own day count / rounding, and its semi-monthly pay days
+  const payDays = freq === 'semimonthly' && loan.pay_days?.length === 2 ? (loan.pay_days as [number, number]) : undefined
+  const params = { principal: Math.round(newPrincipal * 100) / 100, interest_method: method as 'flat', interest_rate: Number(rate), rate_period: period, repayment_frequency: freq, term_count: Number(term), release_date: today, first_due_date: firstDue || null, processing_fee_type: 'none' as const, processing_fee_value: 0, other_charges: 0, charges_treatment: 'added' as const, penalty_enabled: false, day_count: loan.day_count, rounding: loan.rounding, pay_days: payDays }
   const preview = useQuery({
     queryKey: ['reschedule-preview', loan.id, JSON.stringify(params)],
     queryFn: () => loansService.preview(params),
@@ -220,7 +222,7 @@ export function RescheduleDialog({ loan, open, onOpenChange, onDone }: Props) {
     retry: false,
   })
   const m = useMutation({
-    mutationFn: () => loansService.reschedule(loan.id, { interest_method: method, interest_rate: Number(rate), rate_period: period, repayment_frequency: freq, term_count: Number(term), first_due_date: firstDue || null, reason }),
+    mutationFn: () => loansService.reschedule(loan.id, { interest_method: method, interest_rate: Number(rate), rate_period: period, repayment_frequency: freq, term_count: Number(term), first_due_date: firstDue || null, pay_days: payDays ?? null, reason }),
     onSuccess: (r) => { toast.success(`Loan rescheduled (amendment v${r.version}). Generate the amendment agreement for signing.`); onOpenChange(false); onDone() },
     onError: (e) => toast.error(errorMessage(e)),
   })

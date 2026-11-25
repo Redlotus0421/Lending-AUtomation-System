@@ -45,6 +45,11 @@ serve(async (req) => {
   if (body.action === 'reset_password') {
     const { data: target } = await admin.from('user_profiles').select('id, organization_id').eq('id', body.user_id).maybeSingle()
     if (!target || target.organization_id !== access.organization_id) throw new HttpError(404, 'User not found')
+    // same rule as set_user_role / set_user_active: only an owner may act on an owner's login
+    const { data: targetRole, error: roleErr } = await admin.from('user_roles').select('role')
+      .eq('user_id', body.user_id).eq('organization_id', access.organization_id).maybeSingle()
+    if (roleErr) throw new HttpError(500, roleErr.message)
+    if (targetRole?.role === 'owner' && access.role !== 'owner') throw new HttpError(403, 'Only an owner can reset another owner’s password')
     if ((body.password ?? '').length < minLen) throw new HttpError(400, `Password must be at least ${minLen} characters`)
     const { error } = await admin.auth.admin.updateUserById(body.user_id, { password: body.password })
     if (error) throw new HttpError(400, error.message)

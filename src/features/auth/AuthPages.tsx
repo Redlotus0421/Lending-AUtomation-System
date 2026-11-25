@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -183,7 +184,11 @@ export function NoAccountPage() {
 export function ProfilePage() {
   const { access, session, refresh } = useAuth()
   const [name, setName] = useState(access?.full_name ?? '')
-  const [phone, setPhone] = useState('')
+  const qc = useQueryClient()
+  const profileQ = useQuery({ queryKey: ['my-profile', access?.user_id], queryFn: () => orgService.profile() })
+  // null = not edited yet: show (and save) the stored number rather than a blank that would erase it
+  const [phoneEdit, setPhone] = useState<string | null>(null)
+  const phone = phoneEdit ?? profileQ.data?.phone ?? ''
   const [pw, setPw] = useState('')
   const [busy, setBusy] = useState(false)
   return (
@@ -195,13 +200,15 @@ export function ProfilePage() {
         try {
           await orgService.updateMyProfile(name, phone)
           await refresh()
+          setPhone(null)
+          void qc.invalidateQueries({ queryKey: ['my-profile'] })
           toast.success('Profile updated')
         } catch (err) { toast.error(errorMessage(err)) } finally { setBusy(false) }
       }}>
         <Field label="Email"><Input value={session?.user.email ?? ''} disabled className="h-10" /></Field>
         <Field label="Full name"><Input value={name} onChange={(e) => setName(e.target.value)} className="h-10" /></Field>
         <Field label="Mobile number"><Input value={phone} onChange={(e) => setPhone(e.target.value)} className="h-10" placeholder="09XX XXX XXXX" /></Field>
-        <Button disabled={busy}>{busy && <Spinner />} Save</Button>
+        <Button disabled={busy || profileQ.isLoading}>{busy && <Spinner />} Save</Button>
       </form>
       <form className="space-y-4 rounded-xl border bg-white p-5 shadow-card" onSubmit={async (e) => {
         e.preventDefault()

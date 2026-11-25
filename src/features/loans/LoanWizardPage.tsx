@@ -284,25 +284,34 @@ export default function LoanWizardPage() {
       const v = schema.parse(form.getValues())
       const p: LoanInput = { ...toPayload(v), borrower_id: borrower!.id, submit: mode !== 'draft' }
       const loan = editId ? await loansService.update(editId, p) : await loansService.create(p)
+      // From here on the loan exists: follow-up failures are reported, never thrown, so the page
+      // moves on to the saved loan and a second Submit cannot create a duplicate.
+      let followUpFailed = false
       if (approveNow && mode !== 'draft' && can('loans.approve')) {
-        await loansService.approve(loan.id, 'Approved at loan creation')
+        try {
+          await loansService.approve(loan.id, 'Approved at loan creation')
+        } catch (e) {
+          followUpFailed = true
+          toast.error(`Loan ${loan.loan_number} saved, but it could not be approved: ${errorMessage(e)}`)
+        }
       }
       if (mode === 'agreement') {
         try {
           await agreementsService.generate(loan.id)
         } catch (e) {
-          toast.error(`Loan saved, but the agreement could not be generated: ${errorMessage(e)}`)
+          followUpFailed = true
+          toast.error(`Loan ${loan.loan_number} saved, but the agreement could not be generated: ${errorMessage(e)}`)
         }
       }
-      return loan
+      return { ...loan, followUpFailed }
     },
-    onSuccess: (loan, mode) => {
+    onSuccess: ({ followUpFailed, ...loan }, mode) => {
       setSaved(true)
       clearDraft(draftKey)
       void qc.invalidateQueries({ queryKey: ['loans'] })
       void qc.invalidateQueries({ queryKey: ['loan', loan.id] })
       void qc.invalidateQueries({ queryKey: ['dashboard'] })
-      toast.success(mode === 'draft' ? `Draft ${loan.loan_number} saved` : mode === 'agreement' ? `Loan ${loan.loan_number} created and agreement generated` : `Loan ${loan.loan_number} submitted for review`)
+      if (!followUpFailed) toast.success(mode === 'draft' ? `Draft ${loan.loan_number} saved` : mode === 'agreement' ? `Loan ${loan.loan_number} created and agreement generated` : `Loan ${loan.loan_number} submitted for review`)
       navigate(`/loans/${loan.id}${mode === 'agreement' ? '?tab=agreement' : ''}`)
     },
     onError: (e) => toast.error(errorMessage(e)),

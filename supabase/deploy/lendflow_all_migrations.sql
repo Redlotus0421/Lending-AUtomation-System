@@ -7643,3 +7643,1697 @@ revoke execute on function public.lf_loan_term_months() from public, anon, authe
 revoke execute on function public.lf_simplified_params(uuid, jsonb) from public, anon, authenticated;
 grant execute on function public.lf_simplified_params(uuid, jsonb) to service_role;
 
+
+-- ==== 20261119000017_semimonthly_pay_days.sql ====
+-- =============================================================================
+-- LendFlow — Semi-monthly pay days chosen per loan
+--
+-- Semi-monthly loans used to fall due 15 days apart from the first due date
+-- (15th & 30th, 10th & 25th ...). Borrowers are paid on fixed days that are not
+-- always 15 days apart (e.g. the 5th and 20th, or the 10th and 30th), so the
+-- lender can now pick the two pay days for each loan:
+--   loans.pay_days = {5, 20}   -> due every 5th and 20th
+-- A day past the end of a month falls on that month's last day (the 30th / 31st
+-- in February is the 28th or 29th). The first payment is the first pay day at
+-- least 10 days after release unless the lender picks a later pay day.
+-- Loans without pay days keep the original behaviour.
+-- =============================================================================
+
+alter table public.loans add column pay_days smallint[]
+  check (pay_days is null or (array_length(pay_days, 1) = 2 and pay_days[1] >= 1 and pay_days[2] <= 31
+                              and pay_days[2] - pay_days[1] between 7 and 23));
+
+-- 1 -> '1st', 2 -> '2nd', 22 -> '22nd', 11 -> '11th'
+create or replace function public.lf_ordinal(p integer)
+returns text language sql immutable as $$
+  select p || case when p % 100 between 11 and 13 then 'th'
+                   when p % 10 = 1 then 'st' when p % 10 = 2 then 'nd' when p % 10 = 3 then 'rd' else 'th' end
+$$;
+
+-- Day p_day of the month containing p_month, clamped to the month's last day
+create or replace function public.lf_month_day(p_month date, p_day integer)
+returns date language sql immutable as $$
+  select date_trunc('month', p_month)::date
+         + (least(p_day, extract(day from (date_trunc('month', p_month) + interval '1 month - 1 day'))::int) - 1)
+$$;
+
+-- First pay date on or after p_from (p_days sorted ascending)
+create or replace function public.lf_next_payday(p_from date, p_days integer[])
+returns date language sql immutable as $$
+  select min(d) from (
+    select public.lf_month_day((p_from + make_interval(months => m))::date, x) as d
+    from generate_series(0, 1) m, unnest(p_days) x
+  ) c where d >= p_from
+$$;
+
+-- Due date of installment p_i (1-based) when the first due date p_first is one of the pay days
+create or replace function public.lf_payday_due(p_first date, p_days integer[], p_i integer)
+returns date language sql immutable as $$
+  with s as (
+    select case when p_first = public.lf_month_day(p_first, p_days[1]) then 0 else 1 end as off
+  )
+  select public.lf_month_day((date_trunc('month', p_first) + make_interval(months => (p_i - 1 + off) / 2))::date,
+                             p_days[((p_i - 1 + off) % 2) + 1])
+  from s
+$$;
+
+-- pay_days is whatever the server calculation used (like term_months)
+create or replace function public.lf_loan_pay_days()
+returns trigger language plpgsql as $$
+begin
+  new.pay_days := case when jsonb_typeof(new.calc_summary->'pay_days') = 'array'
+                       then array(select x::smallint from jsonb_array_elements_text(new.calc_summary->'pay_days') x) end;
+  return new;
+end $$;
+create trigger lf_loan_pay_days before insert or update of calc_summary on public.loans
+  for each row execute function public.lf_loan_pay_days();
+
+create or replace function public.compute_loan_schedule(p jsonb)
+returns jsonb language plpgsql stable as $$
+declare
+  v_principal numeric;
+  v_method text := coalesce(nullif(p->>'interest_method', ''), 'flat');
+  v_rate numeric := coalesce(nullif(p->>'interest_rate', '')::numeric, 0);
+  v_rate_period text := coalesce(nullif(p->>'rate_period', ''), 'monthly');
+  v_freq text := coalesce(nullif(p->>'repayment_frequency', ''), 'monthly');
+  v_n integer := nullif(p->>'term_count', '')::integer;
+  v_release date := coalesce(nullif(p->>'release_date', '')::date, current_date);
+  v_first date := nullif(p->>'first_due_date', '')::date;
+  v_months_txt text := nullif(trim(p->>'term_months'), '');
+  v_days integer[];
+  v_default_first date;
+  v_months integer;
+  v_target date;
+  v_day_count text := coalesce(nullif(p->>'day_count', ''), '30/360');
+  v_rounding text := coalesce(nullif(p->>'rounding', ''), 'centavo');
+  v_fee_type text := coalesce(nullif(p->>'processing_fee_type', ''), 'none');
+  v_fee_value numeric := coalesce(nullif(p->>'processing_fee_value', '')::numeric, 0);
+  v_other numeric := round(coalesce(nullif(p->>'other_charges', '')::numeric, 0), 2);
+  v_treatment text := coalesce(nullif(p->>'charges_treatment', ''), 'deducted');
+
+  v_scale integer;
+  v_annual numeric;
+  v_r numeric;
+  v_fee numeric := 0;
+  v_charges numeric;
+  v_financed numeric;
+  v_deducted numeric;
+  v_net numeric;
+
+  v_due date[] := '{}';
+  v_rate_k numeric[] := '{}';
+  v_pmt numeric;
+  v_bal numeric;
+  v_int numeric;
+  v_prin numeric;
+  v_chg numeric;
+  v_chg_each numeric;
+  v_int_each numeric;
+  v_prin_each numeric;
+  v_total_interest numeric := 0;
+  v_flat_interest numeric;
+  v_sum_int numeric := 0;
+  v_sum_chg numeric := 0;
+  v_sum_prin numeric := 0;
+  v_rows jsonb := '[]'::jsonb;
+  v_flows numeric[] := '{}';
+  v_prev date;
+  v_lo numeric; v_hi numeric; v_mid numeric; v_res numeric;
+  v_iter integer;
+  k integer;
+  v_irr numeric;
+  v_ppy_freq numeric;
+  v_last_total numeric;
+  v_first_total numeric;
+  v_warnings jsonb := '[]'::jsonb;
+  v_total_repayment numeric;
+begin
+  -- ---------- validation ----------
+  begin
+    v_principal := (p->>'principal')::numeric;
+  exception when others then
+    raise exception 'Loan amount is not a valid number' using errcode = '22023';
+  end;
+  if v_principal is null or v_principal <= 0 then
+    raise exception 'Loan amount must be greater than zero' using errcode = '22023';
+  end if;
+  if v_principal > 999999999999 then
+    raise exception 'Loan amount is too large' using errcode = '22023';
+  end if;
+  if v_method not in ('flat', 'diminishing') then
+    raise exception 'Unknown interest method "%"', v_method using errcode = '22023';
+  end if;
+  if v_rate_period not in ('daily', 'weekly', 'monthly', 'yearly') then
+    raise exception 'Unknown interest rate period "%"', v_rate_period using errcode = '22023';
+  end if;
+  if v_freq not in ('daily', 'weekly', 'semimonthly', 'monthly') then
+    raise exception 'Unknown repayment frequency "%"', v_freq using errcode = '22023';
+  end if;
+  if v_day_count not in ('30/360', 'actual/365', 'actual/actual') then
+    raise exception 'Unknown day-count basis "%"', v_day_count using errcode = '22023';
+  end if;
+  if v_rounding not in ('centavo', 'peso') then
+    raise exception 'Unknown rounding rule "%"', v_rounding using errcode = '22023';
+  end if;
+  if v_rate < 0 then
+    raise exception 'Interest rate cannot be negative' using errcode = '22023';
+  end if;
+  if v_rate > 100 then
+    raise exception 'Interest rate above 100%% per period is not allowed' using errcode = '22023';
+  end if;
+  -- semi-monthly pay days chosen by the lender (e.g. the 5th and 20th, matching the borrower's payday)
+  if v_freq = 'semimonthly' and jsonb_typeof(p->'pay_days') = 'array' and jsonb_array_length(p->'pay_days') > 0 then
+    begin
+      select array_agg(x::integer order by x::integer) into v_days from jsonb_array_elements_text(p->'pay_days') x;
+    exception when others then
+      raise exception 'Pay days must be whole days of the month' using errcode = '22023';
+    end;
+    if array_length(v_days, 1) <> 2 or v_days[1] < 1 or v_days[2] > 31 or v_days[1] = v_days[2] then
+      raise exception 'Choose two different pay days between the 1st and the 31st' using errcode = '22023';
+    end if;
+    if v_days[2] - v_days[1] < 7 or v_days[2] - v_days[1] > 23 then
+      raise exception 'The two pay days must be at least 7 days apart (e.g. the 5th and 20th, or the 15th and 30th)' using errcode = '22023';
+    end if;
+  end if;
+  v_default_first := case when v_days is not null then public.lf_next_payday(v_release + 10, v_days)
+                          else public.lf_default_first_due(v_release, v_freq) end;
+  if v_days is not null and v_first is not null and v_first <> public.lf_next_payday(v_first, v_days) then
+    raise exception 'The first payment date must fall on one of the pay days (the % and %)',
+      public.lf_ordinal(v_days[1]), public.lf_ordinal(v_days[2]) using errcode = '22023';
+  end if;
+
+  -- repayment period in months: the number of installments follows from the frequency
+  if v_months_txt is not null then
+    if v_months_txt !~ '^[0-9]+$' then
+      raise exception 'Repayment period must be a whole number of months' using errcode = '22023';
+    end if;
+    v_months := v_months_txt::integer;
+    if v_months < 1 then
+      raise exception 'Repayment period must be at least 1 month' using errcode = '22023';
+    end if;
+    if v_months > 360 then
+      raise exception 'Repayment period is too long (maximum 360 months)' using errcode = '22023';
+    end if;
+    v_first := coalesce(v_first, v_default_first);
+    v_target := (v_release + make_interval(months => v_months))::date;
+    v_n := case v_freq
+      when 'monthly' then v_months
+      when 'semimonthly' then v_months * 2
+      -- weekly / daily: every actual due date that falls within the repayment period
+      when 'weekly' then case when v_first <= v_target then (v_target - v_first) / 7 + 1 else 0 end
+      when 'daily' then case when v_first <= v_target then (v_target - v_first) + 1 else 0 end
+    end;
+    if v_n < 1 then
+      raise exception 'The first repayment date falls after the end of the repayment period' using errcode = '22023';
+    end if;
+  end if;
+  if v_n is null or v_n < 1 then
+    raise exception 'Repayment duration must be at least 1 installment' using errcode = '22023';
+  end if;
+  if v_n > 3660 then
+    raise exception 'Repayment duration is too long (maximum 3,660 installments)' using errcode = '22023';
+  end if;
+  if v_fee_type not in ('none', 'fixed', 'percent') then
+    raise exception 'Unknown processing fee type "%"', v_fee_type using errcode = '22023';
+  end if;
+  if v_fee_value < 0 or v_other < 0 then
+    raise exception 'Fees and charges cannot be negative' using errcode = '22023';
+  end if;
+  if v_treatment not in ('added', 'deducted') then
+    raise exception 'Unknown charges treatment "%"', v_treatment using errcode = '22023';
+  end if;
+  if v_first is null then
+    v_first := v_default_first;
+  end if;
+  if v_first <= v_release then
+    raise exception 'First repayment date must be after the loan release date' using errcode = '22023';
+  end if;
+
+  v_principal := round(v_principal, 2);
+  v_scale := case when v_rounding = 'peso' then 0 else 2 end;
+
+  -- ---------- rates ----------
+  v_ppy_freq := public.lf_ppy(v_freq, v_day_count);
+  v_annual := v_rate / 100 * public.lf_ppy(v_rate_period, v_day_count);
+  v_r := v_annual / v_ppy_freq;
+
+  -- ---------- charges ----------
+  v_fee := case v_fee_type
+    when 'fixed' then round(v_fee_value, 2)
+    when 'percent' then round(v_principal * v_fee_value / 100, 2)
+    else 0 end;
+  v_charges := v_fee + v_other;
+  v_financed := case when v_treatment = 'added' then v_charges else 0 end;
+  v_deducted := case when v_treatment = 'deducted' then v_charges else 0 end;
+  v_net := v_principal - v_deducted;
+  if v_net <= 0 then
+    raise exception 'Deducted fees and charges cannot equal or exceed the loan amount' using errcode = '22023';
+  end if;
+
+  -- ---------- due dates & per-period rates ----------
+  v_prev := v_release;
+  for k in 1..v_n loop
+    v_due := v_due || case when v_days is not null then public.lf_payday_due(v_first, v_days, k)
+                           else public.lf_due_date(v_first, v_freq, k) end;
+    if v_method = 'diminishing' and v_day_count <> '30/360' then
+      v_rate_k := v_rate_k || (v_annual * public.lf_year_fraction(v_prev, v_due[k], v_day_count));
+    else
+      v_rate_k := v_rate_k || v_r;
+    end if;
+    v_prev := v_due[k];
+  end loop;
+
+  v_chg_each := round(v_financed / v_n, 2);
+
+  -- ---------- schedule ----------
+  if v_method = 'flat' then
+    -- Principal x monthly rate x months when the period is given in months (any frequency);
+    -- otherwise Principal x periodic rate x installments (identical for monthly / semi-monthly)
+    v_flat_interest := round(case when v_months is not null then v_principal * v_annual / 12 * v_months
+                                  else v_principal * v_r * v_n end, 2);
+    v_int_each := round(v_flat_interest / v_n, 2);
+    v_pmt := round((v_principal + v_flat_interest + v_financed) / v_n, v_scale);
+    v_bal := v_principal;
+    for k in 1..v_n loop
+      if k < v_n then
+        v_int := v_int_each;
+        v_chg := v_chg_each;
+        v_prin := v_pmt - v_int - v_chg;
+        if v_prin < 0 then
+          raise exception 'Installment rounding produced a negative principal portion; use centavo rounding' using errcode = '22023';
+        end if;
+        if v_prin > v_bal then v_prin := v_bal; end if;
+      else
+        v_int := v_flat_interest - v_sum_int;
+        v_chg := v_financed - v_sum_chg;
+        v_prin := v_bal;
+      end if;
+      v_rows := v_rows || jsonb_build_object(
+        'installment_no', k, 'due_date', v_due[k],
+        'opening_balance', v_bal, 'principal', v_prin, 'interest', v_int, 'charges', v_chg,
+        'total', v_prin + v_int + v_chg, 'closing_balance', v_bal - v_prin);
+      v_flows := v_flows || (v_prin + v_int + v_chg);
+      v_sum_int := v_sum_int + v_int;
+      v_sum_chg := v_sum_chg + v_chg;
+      v_sum_prin := v_sum_prin + v_prin;
+      v_bal := v_bal - v_prin;
+    end loop;
+    v_total_interest := v_sum_int;
+  else
+    -- diminishing balance: find level payment
+    if v_r = 0 then
+      v_pmt := v_principal / v_n;
+    elsif v_day_count = '30/360' then
+      v_pmt := v_principal * v_r / (1 - power(1 + v_r, -v_n));
+    else
+      -- solve for the level payment that amortizes to zero under actual-day accrual
+      v_lo := v_principal / v_n;
+      v_hi := v_principal * (1 + v_annual * public.lf_year_fraction(v_release, v_due[v_n], v_day_count)) + 1;
+      for v_iter in 1..120 loop
+        v_mid := (v_lo + v_hi) / 2;
+        v_res := v_principal;
+        for k in 1..v_n loop
+          v_res := v_res - (v_mid - round(v_res * v_rate_k[k], 2));
+        end loop;
+        if v_res > 0 then v_lo := v_mid; else v_hi := v_mid; end if;
+        exit when v_hi - v_lo < 0.000001;
+      end loop;
+      v_pmt := (v_lo + v_hi) / 2;
+    end if;
+    v_pmt := round(v_pmt, v_scale);
+    if v_pmt <= 0 then
+      raise exception 'Computed installment is zero; check the loan amount and duration' using errcode = '22023';
+    end if;
+
+    v_bal := v_principal;
+    for k in 1..v_n loop
+      v_int := round(v_bal * v_rate_k[k], 2);
+      if k < v_n then
+        v_prin := v_pmt - v_int;
+        v_chg := v_chg_each;
+        if v_prin < 0 then
+          raise exception 'Installment does not cover interest (negative amortization); adjust the terms' using errcode = '22023';
+        end if;
+        if v_prin >= v_bal then
+          raise exception 'Rounding to whole pesos pays the loan off early; use centavo rounding for these terms' using errcode = '22023';
+        end if;
+      else
+        v_prin := v_bal;
+        v_chg := v_financed - v_sum_chg;
+      end if;
+      v_rows := v_rows || jsonb_build_object(
+        'installment_no', k, 'due_date', v_due[k],
+        'opening_balance', v_bal, 'principal', v_prin, 'interest', v_int, 'charges', v_chg,
+        'total', v_prin + v_int + v_chg, 'closing_balance', v_bal - v_prin);
+      v_flows := v_flows || (v_prin + v_int + v_chg);
+      v_sum_int := v_sum_int + v_int;
+      v_sum_chg := v_sum_chg + v_chg;
+      v_sum_prin := v_sum_prin + v_prin;
+      v_bal := v_bal - v_prin;
+    end loop;
+    v_total_interest := v_sum_int;
+  end if;
+
+  -- integrity checks
+  if v_sum_prin <> v_principal then
+    raise exception 'Internal calculation error: principal mismatch (% vs %)', v_sum_prin, v_principal;
+  end if;
+  if v_sum_chg <> v_financed then
+    raise exception 'Internal calculation error: charges mismatch';
+  end if;
+
+  v_first_total := (v_rows->0->>'total')::numeric;
+  v_last_total := (v_rows->(v_n - 1)->>'total')::numeric;
+  v_total_repayment := v_principal + v_total_interest + v_financed;
+  v_irr := public.lf_irr(v_net, v_flows);
+
+  if v_first > v_default_first + 31 then
+    v_warnings := v_warnings || to_jsonb('The first repayment date is more than one period after release; the first period is longer than the others.'::text);
+  end if;
+  if v_method = 'flat' and v_n > 1 then
+    v_warnings := v_warnings || to_jsonb('Flat interest is computed on the original principal for the full term; the effective interest rate is higher than the nominal rate.'::text);
+  end if;
+
+  return jsonb_build_object(
+    'summary', jsonb_build_object(
+      'principal', v_principal,
+      'interest_method', v_method,
+      'interest_rate', v_rate,
+      'rate_period', v_rate_period,
+      'rate_basis', 'nominal',
+      'day_count', v_day_count,
+      'rounding', v_rounding,
+      'repayment_frequency', v_freq,
+      'term_count', v_n,
+      'term_months', v_months,
+      'pay_days', to_jsonb(v_days),
+      'monthly_rate_pct', round(v_annual / 12 * 100, 6),
+      'installment_count', v_n,
+      'duration_label', case when v_months is not null
+                          then v_months || ' month' || case when v_months <> 1 then 's' else '' end || ' ('
+                               || v_n || ' ' || case v_freq when 'semimonthly' then 'semi-monthly' else v_freq end
+                               || ' payment' || case when v_n <> 1 then 's' else '' end
+                               || case when v_days is not null then ', every ' || public.lf_ordinal(v_days[1]) || ' and ' || public.lf_ordinal(v_days[2]) else '' end || ')'
+                        when v_freq = 'semimonthly' and v_days is not null
+                          then v_n || ' semi-monthly payment' || case when v_n <> 1 then 's' else '' end
+                               || ' (every ' || public.lf_ordinal(v_days[1]) || ' and ' || public.lf_ordinal(v_days[2]) || ')'
+                        when v_freq = 'semimonthly'
+                          then v_n || ' semi-monthly payment' || case when v_n <> 1 then 's' else '' end
+                               || ' (' || public.lf_fmt_num(v_n / 2.0) || ' month' || case when v_n <> 2 then 's' else '' end || ')'
+                          else v_n || ' ' || public.lf_period_label(v_freq, v_n <> 1) end,
+      'release_date', v_release,
+      'first_due_date', v_first,
+      'last_due_date', v_due[v_n],
+      'annual_nominal_rate', round(v_annual * 100, 6),
+      'periodic_rate', v_r,
+      'periodic_rate_pct', round(v_r * 100, 6),
+      'processing_fee_type', v_fee_type,
+      'processing_fee_value', v_fee_value,
+      'processing_fee', v_fee,
+      'other_charges', v_other,
+      'total_charges', v_charges,
+      'charges_treatment', v_treatment,
+      'financed_charges', v_financed,
+      'deducted_charges', v_deducted,
+      'net_proceeds', v_net,
+      'total_interest', v_total_interest,
+      'total_repayment', v_total_repayment,
+      'finance_charge', v_total_interest + v_charges,
+      'installment_amount', v_first_total,
+      'last_installment_amount', v_last_total,
+      'eir_periodic_pct', case when v_irr is null then null else round(v_irr * 100, 6) end,
+      'eir_monthly_pct', case when v_irr is null then null else round(v_irr * v_ppy_freq / 12 * 100, 4) end,
+      'eir_annual_nominal_pct', case when v_irr is null then null else round(v_irr * v_ppy_freq * 100, 4) end,
+      'effective_annual_rate_pct', case when v_irr is null then null
+                                        else round(((power(1 + v_irr::double precision, v_ppy_freq::double precision) - 1) * 100)::numeric, 4) end
+    ),
+    'schedule', v_rows,
+    'disclosures', jsonb_build_array(
+      format('Interest rate entered: %s%% per %s (nominal).', public.lf_fmt_num(v_rate), public.lf_period_label(v_rate_period)),
+      format('Equivalent nominal annual rate: %s%%; rate applied per %s installment period: %s%%.',
+             public.lf_fmt_num(round(v_annual * 100, 4)), public.lf_period_label(v_freq),
+             public.lf_fmt_num(round(v_r * 100, 6))),
+      case when v_method = 'flat'
+        then case when v_months is not null
+          then format('Flat method: interest is computed on the original principal for the whole term (Principal × monthly rate × %s months), spread over %s installments.', v_months, v_n)
+          else 'Flat method: interest is computed on the original principal for the whole term (Principal × periodic rate × number of installments).' end
+        else 'Diminishing balance: interest each period is computed on the outstanding principal; payments are level and the final installment absorbs rounding.' end,
+      format('Day-count basis: %s. Periods per year — monthly 12, semi-monthly 24, weekly 52, daily %s.', v_day_count,
+             case when v_day_count = '30/360' then 360 else 365 end),
+      format('Fees and charges of PHP %s are %s.', to_char(v_charges, 'FM999,999,999,990.00'),
+             case when v_treatment = 'added' then 'added to the installments' else 'deducted from the loan proceeds' end)
+    ),
+    'warnings', v_warnings
+  );
+end $$;
+
+create or replace function public.lf_build_loan_params(p_org uuid, p jsonb)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  s jsonb := public.lf_settings(p_org);
+  pr public.loan_products%rowtype;
+  v_has_product boolean := false;
+  v_method text;
+  v_principal numeric;
+  v_term integer;
+  v jsonb;
+begin
+  if nullif(p->>'product_id', '') is not null then
+    select * into pr from public.loan_products
+    where id = (p->>'product_id')::uuid and organization_id = p_org;
+    if not found then raise exception 'Loan product not found' using errcode = '22023'; end if;
+    if not pr.is_active then raise exception 'Loan product "%" is inactive', pr.name using errcode = '22023'; end if;
+    v_has_product := true;
+  end if;
+
+  v_method := coalesce(nullif(p->>'interest_method', ''),
+                       case when v_has_product then pr.interest_method::text end,
+                       s #>> '{interest,default_method}');
+  if v_method = 'flat' and not coalesce((s #>> '{interest,flat_enabled}')::boolean, true) then
+    raise exception 'Flat interest is disabled in settings' using errcode = '22023';
+  end if;
+  if v_method = 'diminishing' and not coalesce((s #>> '{interest,diminishing_enabled}')::boolean, true) then
+    raise exception 'Diminishing balance interest is disabled in settings' using errcode = '22023';
+  end if;
+
+  v := jsonb_build_object(
+    'product_id', case when v_has_product then pr.id end,
+    'principal', p->'principal',
+    'interest_method', v_method,
+    'interest_rate', coalesce(nullif(p->>'interest_rate', '')::numeric,
+                              case when v_has_product then pr.interest_rate end,
+                              (s #>> '{interest,default_rate}')::numeric),
+    'rate_period', coalesce(nullif(p->>'rate_period', ''), case when v_has_product then pr.rate_period::text end,
+                            s #>> '{interest,default_rate_period}'),
+    'repayment_frequency', coalesce(nullif(p->>'repayment_frequency', ''), case when v_has_product then pr.repayment_frequency::text end,
+                                    s #>> '{repayment,default_frequency}'),
+    'term_count', case when nullif(p->>'term_months', '') is null
+                       then coalesce(nullif(p->>'term_count', '')::integer, case when v_has_product then pr.default_term end) end,
+    'term_months', nullif(p->>'term_months', ''),
+    'release_date', coalesce(nullif(p->>'release_date', '')::date, public.lf_today(p_org)),
+    'first_due_date', nullif(p->>'first_due_date', ''),
+    'pay_days', case when jsonb_typeof(p->'pay_days') = 'array' and jsonb_array_length(p->'pay_days') > 0 then p->'pay_days' end,
+    'day_count', coalesce(nullif(p->>'day_count', ''), case when v_has_product then pr.day_count end, s #>> '{interest,day_count}'),
+    'rounding', coalesce(nullif(p->>'rounding', ''), s #>> '{interest,rounding}'),
+    'processing_fee_type', coalesce(nullif(p->>'processing_fee_type', ''), case when v_has_product then pr.processing_fee_type end, 'none'),
+    'processing_fee_value', coalesce(nullif(p->>'processing_fee_value', '')::numeric, case when v_has_product then pr.processing_fee_value end, 0),
+    'other_charges', coalesce(nullif(p->>'other_charges', '')::numeric, 0),
+    'other_charges_description', nullif(p->>'other_charges_description', ''),
+    'charges_treatment', coalesce(nullif(p->>'charges_treatment', ''), case when v_has_product then pr.charges_treatment end,
+                                  s #>> '{repayment,charges_treatment}'),
+    'penalty_enabled', coalesce((p->>'penalty_enabled')::boolean,
+                                case when v_has_product then pr.penalty_enabled end,
+                                (s #>> '{penalty,enabled}')::boolean, false),
+    'penalty_type', coalesce(nullif(p->>'penalty_type', ''), case when v_has_product and pr.penalty_enabled then pr.penalty_type end,
+                             s #>> '{penalty,type}'),
+    'penalty_rate', coalesce(nullif(p->>'penalty_rate', '')::numeric, case when v_has_product and pr.penalty_enabled then pr.penalty_rate end,
+                             (s #>> '{penalty,rate}')::numeric, 0),
+    'penalty_grace_days', coalesce(nullif(p->>'penalty_grace_days', '')::integer, case when v_has_product and pr.penalty_enabled then pr.penalty_grace_days end,
+                                   (s #>> '{penalty,grace_days}')::integer, 0),
+    'allocation_order', coalesce(p->'allocation_order', s #> '{repayment,allocation_order}'),
+    'signing_order', coalesce(nullif(p->>'signing_order', ''), s #>> '{agreement,signing_order}'),
+    'witness_count', coalesce(nullif(p->>'witness_count', '')::integer, (s #>> '{agreement,witness_count}')::integer, 0),
+    'agreement_template_id', coalesce(nullif(p->>'agreement_template_id', '')::uuid,
+                                      case when v_has_product then pr.agreement_template_id end,
+                                      nullif(s #>> '{agreement,default_template_id}', '')::uuid)
+  );
+
+  v_principal := nullif(v->>'principal', '')::numeric;
+  v_term := nullif(v->>'term_count', '')::integer;
+  if v_has_product then
+    if pr.min_amount is not null and v_principal < pr.min_amount then
+      raise exception 'Loan amount is below the product minimum of PHP %', to_char(pr.min_amount, 'FM999,999,999,990.00') using errcode = '22023';
+    end if;
+    if pr.max_amount is not null and v_principal > pr.max_amount then
+      raise exception 'Loan amount exceeds the product maximum of PHP %', to_char(pr.max_amount, 'FM999,999,999,990.00') using errcode = '22023';
+    end if;
+    if pr.min_term is not null and v_term < pr.min_term then
+      raise exception 'Duration is below the product minimum of % installments', pr.min_term using errcode = '22023';
+    end if;
+    if pr.max_term is not null and v_term > pr.max_term then
+      raise exception 'Duration exceeds the product maximum of % installments', pr.max_term using errcode = '22023';
+    end if;
+  end if;
+  if (v->>'penalty_enabled')::boolean and coalesce(v->>'penalty_type', '') not in ('fixed', 'percent_once', 'percent_daily', 'percent_monthly') then
+    raise exception 'A valid penalty type is required when penalties are enabled' using errcode = '22023';
+  end if;
+  if jsonb_typeof(v->'allocation_order') <> 'array' or jsonb_array_length(v->'allocation_order') <> 4
+     or not (v->'allocation_order' ?& array['penalty', 'charges', 'interest', 'principal']) then
+    raise exception 'Payment allocation order must list penalty, charges, interest and principal exactly once' using errcode = '22023';
+  end if;
+  if v->>'signing_order' not in ('borrower_first', 'lender_first', 'any') then
+    raise exception 'Invalid signing order' using errcode = '22023';
+  end if;
+  return v;
+end $$;
+
+create or replace function public.lf_simplified_params(p_org uuid, p jsonb)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  s jsonb := public.lf_settings(p_org);
+  ss jsonb := coalesce(s -> 'simplified', '{}'::jsonb);
+  v_rate numeric;
+  v_freq text := coalesce(nullif(p->>'repayment_frequency', ''), s #>> '{repayment,default_frequency}');
+begin
+  -- staff may pick any repayment frequency the business has enabled (e.g. monthly or semi-monthly)
+  if not coalesce((s #> '{repayment,frequencies}') ? v_freq, false) and v_freq is distinct from s #>> '{repayment,default_frequency}' then
+    raise exception 'Repayment frequency "%" is not enabled in your business settings', v_freq using errcode = '22023';
+  end if;
+  if nullif(p->>'interest_rate', '') is not null
+     and (p->>'interest_rate')::numeric is distinct from (s #>> '{interest,default_rate}')::numeric then
+    if not coalesce((ss->>'allow_rate_override')::boolean, false) then
+      raise exception 'The interest rate is fixed by your business settings (%). Changing it per loan is not allowed.',
+        public.lf_fmt_num((s #>> '{interest,default_rate}')::numeric) || '%' using errcode = '42501';
+    end if;
+    v_rate := (p->>'interest_rate')::numeric;
+  else
+    v_rate := (s #>> '{interest,default_rate}')::numeric;
+  end if;
+  if nullif(p->>'term_count', '') is null and nullif(p->>'term_months', '') is null then
+    raise exception 'Enter the repayment period in months' using errcode = '22023';
+  end if;
+  return public.lf_build_loan_params(p_org, jsonb_build_object(
+    'principal', p->'principal',
+    'term_count', p->'term_count',
+    'term_months', p->'term_months',
+    'interest_rate', v_rate,
+    'interest_method', s #>> '{interest,default_method}',
+    'rate_period', s #>> '{interest,default_rate_period}',
+    'repayment_frequency', v_freq,
+    'release_date', public.lf_today(p_org),
+    'first_due_date', nullif(p->>'first_due_date', ''),
+    'pay_days', p->'pay_days',
+    'processing_fee_type', coalesce(ss->>'processing_fee_type', 'none'),
+    'processing_fee_value', coalesce((ss->>'processing_fee_value')::numeric, 0),
+    'other_charges', 0,
+    'charges_treatment', s #>> '{repayment,charges_treatment}'));
+end $$;
+
+create or replace function public.lf_loan_params(l public.loans)
+returns jsonb language sql stable as $$
+  select jsonb_build_object(
+    'product_id', l.product_id, 'principal', l.principal, 'interest_method', l.interest_method,
+    'interest_rate', l.interest_rate, 'rate_period', l.rate_period, 'repayment_frequency', l.repayment_frequency,
+    'term_count', l.term_count, 'term_months', l.term_months, 'release_date', l.release_date, 'first_due_date', l.first_due_date,
+    'pay_days', to_jsonb(l.pay_days),
+    'day_count', l.day_count, 'rounding', l.rounding,
+    'processing_fee_type', l.processing_fee_type, 'processing_fee_value', l.processing_fee_value,
+    'other_charges', l.other_charges, 'other_charges_description', l.other_charges_description,
+    'charges_treatment', l.charges_treatment,
+    'penalty_enabled', l.penalty_enabled, 'penalty_type', l.penalty_type, 'penalty_rate', l.penalty_rate,
+    'penalty_grace_days', l.penalty_grace_days, 'allocation_order', to_jsonb(l.allocation_order),
+    'signing_order', l.signing_order, 'witness_count', l.witness_count,
+    'agreement_template_id', l.agreement_template_id)
+$$;
+
+-- v_loans selects l.*; recreate it so it exposes pay_days
+drop view public.v_loans;
+create view public.v_loans with (security_invoker = true) as
+select
+  l.*,
+  b.full_name as borrower_name, b.borrower_code, b.mobile_number as borrower_mobile, b.profile_photo_path as borrower_photo_path,
+  p.name as product_name,
+  lo.full_name as loan_officer_name,
+  co.full_name as collector_name,
+  agg.next_due_date, agg.next_due_amount, agg.overdue_amount, agg.overdue_count, agg.oldest_overdue_date,
+  case when agg.oldest_overdue_date is null then 0 else public.lf_today(l.organization_id) - agg.oldest_overdue_date end as days_overdue,
+  agg.paid_installments, agg.total_installments,
+  (select a.status from public.loan_agreements a where a.loan_id = l.id order by a.version desc limit 1) as agreement_status
+from public.loans l
+join public.borrowers b on b.id = l.borrower_id
+left join public.loan_products p on p.id = l.product_id
+left join public.user_profiles lo on lo.id = l.loan_officer_id
+left join public.user_profiles co on co.id = l.collector_id
+left join lateral (
+  select
+    min(i.due_date) filter (where i.status in ('pending', 'partially_paid') and i.due_date >= public.lf_today(l.organization_id)) as next_due_date,
+    (select public.lf_inst_remaining(x) from public.loan_installments x
+      where x.loan_id = l.id and x.status in ('pending', 'partially_paid') order by x.installment_no limit 1) as next_due_amount,
+    coalesce(sum(public.lf_inst_remaining(i)) filter (where i.status in ('pending', 'partially_paid') and i.due_date < public.lf_today(l.organization_id)), 0) as overdue_amount,
+    count(*) filter (where i.status in ('pending', 'partially_paid') and i.due_date < public.lf_today(l.organization_id)) as overdue_count,
+    min(i.due_date) filter (where i.status in ('pending', 'partially_paid') and i.due_date < public.lf_today(l.organization_id)) as oldest_overdue_date,
+    count(*) filter (where i.status = 'paid') as paid_installments,
+    count(*) filter (where i.status <> 'rescheduled') as total_installments
+  from public.loan_installments i where i.loan_id = l.id
+) agg on true;
+grant select on public.v_loans to authenticated, service_role;
+
+revoke execute on function public.lf_loan_pay_days() from public, anon, authenticated;
+revoke execute on function public.lf_simplified_params(uuid, jsonb) from public, anon, authenticated;
+grant execute on function public.lf_simplified_params(uuid, jsonb) to service_role;
+
+
+-- ==== 20261119000018_co_maker_signature.sql ====
+-- =============================================================================
+-- LendFlow — The co-maker signs the loan agreement
+--
+-- When the borrower has a co-maker (guarantor) on file, new agreements require the
+-- co-maker's signature too (signer role 'co_maker'), next to the borrower's. Like the
+-- borrower, the co-maker signs in person on a staff member's device (witnessed) or
+-- through a secure signing link; their name always comes from the borrower record.
+-- Businesses can turn this off with settings.agreement.require_co_maker_signature.
+-- Agreements generated before this change keep their original signers.
+-- =============================================================================
+
+alter table public.agreement_signing_sessions drop constraint agreement_signing_sessions_signer_role_check;
+alter table public.agreement_signing_sessions add constraint agreement_signing_sessions_signer_role_check
+  check (signer_role in ('borrower', 'co_maker', 'lender', 'witness_1', 'witness_2'));
+
+create or replace function public.agreement_begin(p_loan_id uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public.lf_require('agreements.generate');
+  l public.loans%rowtype;
+  v_settings jsonb;
+  v_params jsonb;
+  v_calc jsonb;
+  v_snap public.loan_terms_snapshots%rowtype;
+  v_snap_id uuid;
+  v_version integer;
+  v_template public.loan_agreement_templates%rowtype;
+  v_kind text := 'original';
+  v_signers text[];
+  v_id uuid;
+  i integer;
+begin
+  select * into l from public.loans where id = p_loan_id and organization_id = v_org for update;
+  if not found or not public.can_access_loan(l.id) then raise exception 'Loan not found'; end if;
+  v_settings := public.lf_settings(v_org);
+
+  if l.status in ('active', 'defaulted') then
+    -- amendment agreement for a rescheduled loan
+    select * into v_snap from public.loan_terms_snapshots where id = l.terms_snapshot_id;
+    if v_snap.kind <> 'amendment' then
+      raise exception 'This active loan has no pending amendment. Reschedule the loan first to generate an amendment agreement.'
+        using errcode = '22023';
+    end if;
+    if exists (select 1 from public.loan_agreements where terms_snapshot_id = v_snap.id and status in ('pending_signatures', 'partially_signed', 'fully_signed')) then
+      raise exception 'An agreement for this amendment already exists' using errcode = '22023';
+    end if;
+    v_kind := 'amendment';
+    v_snap_id := v_snap.id;
+  elsif l.status in ('draft', 'pending_review', 'approved', 'awaiting_borrower_signature', 'awaiting_lender_signature') then
+    if exists (select 1 from public.agreement_signatures sg join public.loan_agreements a on a.id = sg.agreement_id
+               where a.loan_id = l.id and a.status in ('pending_signatures', 'partially_signed')) then
+      raise exception 'The current agreement already has signatures. Void it before generating a new version.' using errcode = '22023';
+    end if;
+    if l.status = 'draft' then
+      perform public.submit_loan(l.id);
+      select * into l from public.loans where id = l.id;
+    end if;
+    -- supersede any unsigned, still-open agreement
+    update public.agreement_signing_sessions set status = 'revoked'
+    where agreement_id in (select id from public.loan_agreements where loan_id = l.id and status in ('pending_signatures', 'generating', 'failed'))
+      and status in ('pending', 'opened', 'verified');
+    update public.loan_agreements set status = 'superseded'
+    where loan_id = l.id and status in ('pending_signatures', 'generating', 'failed');
+
+    -- freeze the contractual terms (recomputed server-side from the loan record)
+    v_params := public.lf_loan_params(l);
+    v_calc := public.compute_loan_schedule(v_params);
+    if (v_calc #>> '{summary,total_repayment}')::numeric <> l.total_repayment
+       or (v_calc #>> '{summary,total_interest}')::numeric <> l.total_interest then
+      raise exception 'Loan figures changed since they were saved. Re-open the loan, review the preview and save it again.';
+    end if;
+    select coalesce(max(version), 0) + 1 into v_version from public.loan_terms_snapshots where loan_id = l.id;
+    insert into public.loan_terms_snapshots (organization_id, loan_id, version, kind, terms, summary, schedule, terms_hash, created_by)
+    values (v_org, l.id, v_version, 'original', v_params, v_calc->'summary', v_calc->'schedule',
+            public.lf_sha256_hex((v_params || jsonb_build_object('schedule', v_calc->'schedule'))::text), auth.uid())
+    returning id into v_snap_id;
+  else
+    raise exception 'Agreements cannot be generated for a loan in status "%"', l.status using errcode = '22023';
+  end if;
+
+  -- template resolution: loan -> settings default -> organization default -> any active
+  select * into v_template from public.loan_agreement_templates t
+  where t.organization_id = v_org and t.is_active and t.current_version_id is not null
+  order by (t.id = l.agreement_template_id) desc,
+           (t.id = nullif(v_settings #>> '{agreement,default_template_id}', '')::uuid) desc,
+           t.is_default desc, t.created_at
+  limit 1;
+  if not found then raise exception 'No active agreement template is configured' using errcode = '22023'; end if;
+
+  v_signers := array['borrower'];
+  -- the borrower's co-maker signs too (on by default; the business can turn it off in settings)
+  if coalesce((v_settings #>> '{agreement,require_co_maker_signature}')::boolean, true)
+     and exists (select 1 from public.guarantors g where g.borrower_id = l.borrower_id) then
+    v_signers := array_append(v_signers, 'co_maker');
+  end if;
+  if coalesce((v_settings #>> '{agreement,require_lender_signature}')::boolean, true) then
+    v_signers := array_append(v_signers, 'lender');
+  end if;
+  for i in 1..coalesce(l.witness_count, 0) loop
+    v_signers := array_append(v_signers, 'witness_' || i);
+  end loop;
+
+  select coalesce(max(version), 0) + 1 into v_version from public.loan_agreements where loan_id = l.id;
+  insert into public.loan_agreements (organization_id, loan_id, agreement_number, version, kind, status,
+    template_id, template_version_id, terms_snapshot_id, required_signers, signing_order, generated_by, generated_at)
+  values (v_org, l.id, public.lf_next_ref(v_org, 'agreement', 'LA'), v_version, v_kind, 'generating',
+    v_template.id, v_template.current_version_id, v_snap_id, v_signers, l.signing_order, auth.uid(), now())
+  returning id into v_id;
+
+  return public.lf_agreement_render_data(v_id);
+end $$;
+
+create or replace function public.signing_session_create(p_agreement_id uuid, p_signer_role text, p_signer_name text default null,
+  p_contact text default null, p_expiry_hours integer default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public.lf_require('agreements.generate');
+  a public.loan_agreements%rowtype;
+  b public.borrowers%rowtype;
+  g public.guarantors%rowtype;
+  v_settings jsonb;
+  v_token text;
+  v_hours integer;
+  v_method text;
+  v_name text;
+  v_id uuid;
+begin
+  select * into a from public.loan_agreements where id = p_agreement_id and organization_id = v_org for update;
+  if not found or not public.can_access_loan(a.loan_id) then raise exception 'Agreement not found'; end if;
+  if a.status not in ('pending_signatures', 'partially_signed') then
+    raise exception 'Agreement is not open for signing (status %)', a.status using errcode = '22023';
+  end if;
+  if not (p_signer_role = any (a.required_signers)) then
+    raise exception 'Role "%" is not a required signer of this agreement', p_signer_role using errcode = '22023';
+  end if;
+  if exists (select 1 from public.agreement_signatures where agreement_id = a.id and signer_role = p_signer_role) then
+    raise exception 'This party has already signed' using errcode = '22023';
+  end if;
+
+  v_settings := public.lf_settings(v_org);
+  v_hours := least(greatest(coalesce(p_expiry_hours, (v_settings #>> '{agreement,link_expiry_hours}')::integer, 72), 1), 720);
+  select b2.* into b from public.borrowers b2 join public.loans l on l.borrower_id = b2.id where l.id = a.loan_id;
+  if p_signer_role = 'borrower' then
+    v_method := coalesce(v_settings #>> '{agreement,identity_verification}', 'dob');
+    if v_method = 'dob' and b.date_of_birth is null then v_method := 'none'; end if;
+    if v_method = 'id_last4' and not exists (select 1 from public.borrower_identities where borrower_id = b.id) then v_method := 'none'; end if;
+    v_name := b.full_name;
+  elsif p_signer_role = 'co_maker' then
+    -- the co-maker's name and number come from the borrower record, never from the client
+    select * into g from public.guarantors where borrower_id = b.id order by created_at desc limit 1;
+    if not found then raise exception 'This borrower has no co-maker on file' using errcode = '22023'; end if;
+    v_method := 'none';
+    v_name := g.full_name;
+    p_contact := coalesce(nullif(p_contact, ''), g.mobile_number);
+  else
+    v_method := 'none';
+    v_name := coalesce(nullif(trim(p_signer_name), ''), initcap(replace(p_signer_role, '_', ' ')));
+  end if;
+
+  update public.agreement_signing_sessions set status = 'revoked'
+  where agreement_id = a.id and signer_role = p_signer_role and status in ('pending', 'opened', 'verified');
+
+  v_token := public.lf_random_token();
+  insert into public.agreement_signing_sessions (organization_id, agreement_id, signer_role, signer_name, signer_contact,
+    token_hash, channel, verification_method, expires_at, created_by)
+  values (v_org, a.id, p_signer_role, v_name, coalesce(nullif(p_contact, ''), case when p_signer_role = 'borrower' then b.mobile_number end),
+    public.lf_sha256_hex(v_token), 'link', v_method, now() + make_interval(hours => v_hours), auth.uid())
+  returning id into v_id;
+
+  perform public.lf_agreement_event(a.id, v_id, 'link_created', 'user', auth.uid(), null, null, null,
+    jsonb_build_object('signer_role', p_signer_role, 'expires_in_hours', v_hours, 'verification', v_method));
+  return jsonb_build_object('session_id', v_id, 'token', v_token, 'expires_at', now() + make_interval(hours => v_hours),
+                            'verification_method', v_method, 'signer_name', v_name);
+end $$;
+
+create or replace function public.signature_commit(p jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  a public.loan_agreements%rowtype;
+  s public.agreement_signing_sessions%rowtype;
+  v_role text := p->>'signer_role';
+  v_existing uuid;
+  v_sig uuid;
+  v_signed text[];
+  v_missing text[];
+  v_session uuid := nullif(p->>'session_id', '')::uuid;
+  v_method text := coalesce(nullif(p->>'verification_method', ''), 'none');
+  v_witness uuid := nullif(p->>'witnessed_by', '')::uuid;
+begin
+  select * into a from public.loan_agreements where id = (p->>'agreement_id')::uuid for update;
+  if not found then raise exception 'Agreement not found'; end if;
+
+  select id into v_existing from public.agreement_signatures where agreement_id = a.id and signer_role = v_role;
+  if found then
+    return jsonb_build_object('duplicate', true, 'signature_id', v_existing) || public.lf_agreement_signing_state(a.id);
+  end if;
+
+  if a.status not in ('pending_signatures', 'partially_signed') then
+    raise exception 'Agreement is not open for signing (status %)', a.status using errcode = '22023';
+  end if;
+  if not (v_role = any (a.required_signers)) then
+    raise exception 'Role "%" is not a required signer', v_role using errcode = '22023';
+  end if;
+  if v_method not in ('none', 'in_person') then raise exception 'Invalid verification method' using errcode = '22023'; end if;
+  if v_role in ('borrower', 'co_maker') and v_session is null and (v_method <> 'in_person' or v_witness is null) then
+    raise exception 'A % signs through a secure link or in person in front of a staff member',
+      case when v_role = 'co_maker' then 'co-maker' else 'borrower' end using errcode = '22023';
+  end if;
+
+  select array_agg(signer_role) into v_signed from public.agreement_signatures where agreement_id = a.id;
+  v_signed := coalesce(v_signed, '{}');
+  if a.signing_order = 'borrower_first' and v_role = 'lender' and not ('borrower' = any (v_signed)) then
+    raise exception 'The borrower must sign before the lender (signing order: borrower first)' using errcode = '22023';
+  end if;
+  if a.signing_order = 'lender_first' and v_role = 'borrower' and 'lender' = any (a.required_signers) and not ('lender' = any (v_signed)) then
+    raise exception 'The lender must sign before the borrower (signing order: lender first)' using errcode = '22023';
+  end if;
+
+  if v_session is not null then
+    select * into s from public.agreement_signing_sessions where id = v_session for update;
+    if not found or s.agreement_id <> a.id or s.signer_role <> v_role then raise exception 'Invalid signing session'; end if;
+    if s.status <> 'verified' then raise exception 'Signing session is not verified (status %)', s.status using errcode = '22023'; end if;
+    if s.expires_at < now() then raise exception 'Signing link has expired' using errcode = '22023'; end if;
+  else
+    -- an in-person borrower signature revokes any outstanding remote link for the same role
+    update public.agreement_signing_sessions set status = 'revoked'
+    where agreement_id = a.id and signer_role = v_role and status in ('pending', 'opened', 'verified');
+    insert into public.agreement_signing_sessions (organization_id, agreement_id, signer_role, signer_name, channel,
+      verification_method, status, expires_at, opened_at, verified_at, created_by)
+    values (a.organization_id, a.id, v_role, p->>'signer_name', 'in_app', v_method, 'verified', now() + interval '1 hour', now(), now(),
+            coalesce(nullif(p->>'signer_user_id', '')::uuid, v_witness))
+    returning * into s;
+  end if;
+
+  insert into public.agreement_signatures (organization_id, agreement_id, session_id, signer_role, signer_name, signer_user_id,
+    signature_image_path, signature_image_hash, consent_text, consent_given_at, verification_method, ip_address, user_agent)
+  values (a.organization_id, a.id, s.id, v_role, coalesce(nullif(p->>'signer_name', ''), s.signer_name),
+    nullif(p->>'signer_user_id', '')::uuid, p->>'image_path', p->>'image_hash', p->>'consent_text',
+    coalesce(nullif(p->>'consent_given_at', '')::timestamptz, now()), s.verification_method, p->>'ip', p->>'user_agent')
+  returning id into v_sig;
+
+  update public.agreement_signing_sessions set status = 'signed', signed_at = now() where id = s.id;
+  update public.loan_agreements set status = 'partially_signed' where id = a.id;
+
+  perform public.lf_agreement_event(a.id, s.id, 'consent_given', case when v_session is null then 'user' else 'signer' end,
+    coalesce(nullif(p->>'signer_user_id', '')::uuid, v_witness), coalesce(nullif(p->>'signer_name', ''), s.signer_name), p->>'ip', p->>'user_agent',
+    jsonb_build_object('consent_text', p->>'consent_text', 'in_person', v_method = 'in_person', 'witnessed_by', v_witness));
+  perform public.lf_agreement_event(a.id, s.id, 'signed', case when v_session is null then 'user' else 'signer' end,
+    coalesce(nullif(p->>'signer_user_id', '')::uuid, v_witness), coalesce(nullif(p->>'signer_name', ''), s.signer_name), p->>'ip', p->>'user_agent',
+    jsonb_build_object('signer_role', v_role, 'signature_hash', p->>'image_hash', 'in_person', v_method = 'in_person', 'witnessed_by', v_witness));
+
+  -- move the loan to the next awaiting state
+  v_signed := array_append(v_signed, v_role);
+  select array_agg(r) into v_missing from unnest(a.required_signers) r where not (r = any (v_signed));
+  if a.kind = 'original' and v_missing is not null then
+    update public.loans set status = case
+        when 'borrower' = any (v_missing) and (a.signing_order <> 'lender_first' or not ('lender' = any (v_missing)))
+          then 'awaiting_borrower_signature'::public.loan_status
+        when 'lender' = any (v_missing) then 'awaiting_lender_signature'::public.loan_status
+        else status end
+    where id = a.loan_id and status in ('awaiting_borrower_signature', 'awaiting_lender_signature');
+  end if;
+
+  return jsonb_build_object('duplicate', false, 'signature_id', v_sig) || public.lf_agreement_signing_state(a.id);
+end $$;
+
+revoke execute on function public.signature_commit(jsonb) from public, anon, authenticated;
+grant execute on function public.signature_commit(jsonb) to service_role;
+
+
+-- ==== 20261119000019_platform_templates.sql ====
+-- =============================================================================
+-- LendFlow — Agreement / terms templates managed by the platform administrator
+--
+-- The platform super admin can list, create, edit (new version), activate and set
+-- the default template of any lender account, the same way the lender's owner does
+-- in Settings. Lenders keep full control of their own templates; the admin role now
+-- manages templates too (owners already could).
+-- =============================================================================
+
+-- Shared save logic for a given organization (used by the lender and the platform admin)
+create or replace function public.lf_save_agreement_template(p_org uuid, p jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_id uuid := nullif(p->>'id', '')::uuid;
+  v_version integer;
+  v_version_id uuid;
+  v_actor uuid := (select id from public.user_profiles where id = auth.uid());
+begin
+  if coalesce(trim(p->>'name'), '') = '' then raise exception 'Template name is required' using errcode = '22023'; end if;
+  if coalesce(trim(p->>'title'), '') = '' then raise exception 'Agreement title is required' using errcode = '22023'; end if;
+  if coalesce(trim(p->>'body'), '') = '' then raise exception 'Template body is required' using errcode = '22023'; end if;
+
+  if v_id is null then
+    insert into public.loan_agreement_templates (organization_id, name, description, is_active, created_by)
+    values (p_org, trim(p->>'name'), nullif(p->>'description', ''), coalesce((p->>'is_active')::boolean, true), v_actor)
+    returning id into v_id;
+  else
+    update public.loan_agreement_templates
+    set name = trim(p->>'name'), description = nullif(p->>'description', ''),
+        is_active = coalesce((p->>'is_active')::boolean, is_active)
+    where id = v_id and organization_id = p_org;
+    if not found then raise exception 'Template not found'; end if;
+  end if;
+
+  select coalesce(max(version_no), 0) + 1 into v_version from public.loan_agreement_template_versions where template_id = v_id;
+  insert into public.loan_agreement_template_versions (organization_id, template_id, version_no, title, body, settings, change_note, created_by)
+  values (p_org, v_id, v_version, trim(p->>'title'), p->>'body', coalesce(p->'settings', '{}'::jsonb), nullif(p->>'change_note', ''), v_actor)
+  returning id into v_version_id;
+
+  update public.loan_agreement_templates set current_version_id = v_version_id where id = v_id;
+  if coalesce((p->>'is_default')::boolean, false) then
+    perform public.lf_set_default_template(p_org, v_id);
+  end if;
+  return jsonb_build_object('id', v_id, 'version_id', v_version_id, 'version_no', v_version);
+end $$;
+
+create or replace function public.lf_set_default_template(p_org uuid, p_template_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not exists (select 1 from public.loan_agreement_templates where id = p_template_id and organization_id = p_org and is_active) then
+    raise exception 'Template not found or inactive';
+  end if;
+  update public.loan_agreement_templates set is_default = false where organization_id = p_org and is_default and id <> p_template_id;
+  update public.loan_agreement_templates set is_default = true where id = p_template_id;
+end $$;
+
+-- the lender's own functions now use the shared logic
+create or replace function public.save_agreement_template(p jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+begin
+  return public.lf_save_agreement_template(public.lf_require('templates.manage'), p);
+end $$;
+
+create or replace function public.set_default_agreement_template(p_template_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public.lf_set_default_template(public.lf_require('templates.manage'), p_template_id);
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Platform administrator
+-- ---------------------------------------------------------------------------
+create or replace function public.lf_platform_template_audit(p_org uuid, p_action text, p_template uuid, p_data jsonb)
+returns void language sql security definer set search_path = public as $$
+  insert into public.audit_logs (organization_id, actor_id, actor_name, action, table_name, record_id, new_data, context)
+  values (p_org, auth.uid(), 'Platform administrator', p_action, 'loan_agreement_templates', p_template::text, p_data,
+          jsonb_build_object('source', 'platform_admin'))
+$$;
+
+create or replace function public.platform_list_templates(p_org uuid)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public.lf_require_platform_admin();
+  if not exists (select 1 from public.organizations where id = p_org) then raise exception 'Account not found' using errcode = 'P0002'; end if;
+  return coalesce((
+    select jsonb_agg(to_jsonb(t) || jsonb_build_object('current', to_jsonb(v)) order by t.is_default desc, t.name)
+    from public.loan_agreement_templates t
+    left join public.loan_agreement_template_versions v on v.id = t.current_version_id
+    where t.organization_id = p_org), '[]'::jsonb);
+end $$;
+
+create or replace function public.platform_get_template(p_org uuid, p_template_id uuid)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare t public.loan_agreement_templates%rowtype;
+begin
+  perform public.lf_require_platform_admin();
+  select * into t from public.loan_agreement_templates where id = p_template_id and organization_id = p_org;
+  if not found then raise exception 'Template not found' using errcode = 'P0002'; end if;
+  return jsonb_build_object(
+    'template', to_jsonb(t),
+    'versions', coalesce((select jsonb_agg(to_jsonb(v) order by v.version_no desc)
+                          from public.loan_agreement_template_versions v where v.template_id = t.id), '[]'::jsonb));
+end $$;
+
+create or replace function public.platform_save_template(p_org uuid, p jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare r jsonb;
+begin
+  perform public.lf_require_platform_admin();
+  if not exists (select 1 from public.organizations where id = p_org) then raise exception 'Account not found' using errcode = 'P0002'; end if;
+  r := public.lf_save_agreement_template(p_org, p);
+  perform public.lf_platform_template_audit(p_org, 'template_saved_by_platform', (r->>'id')::uuid,
+    jsonb_build_object('name', p->>'name', 'version_no', r->'version_no', 'is_default', coalesce((p->>'is_default')::boolean, false)));
+  return r;
+end $$;
+
+create or replace function public.platform_set_default_template(p_org uuid, p_template_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public.lf_require_platform_admin();
+  perform public.lf_set_default_template(p_org, p_template_id);
+  perform public.lf_platform_template_audit(p_org, 'template_set_default_by_platform', p_template_id, '{}'::jsonb);
+end $$;
+
+create or replace function public.platform_set_template_active(p_org uuid, p_template_id uuid, p_active boolean)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public.lf_require_platform_admin();
+  if not p_active and exists (select 1 from public.loan_agreement_templates where id = p_template_id and organization_id = p_org and is_default) then
+    raise exception 'The default template cannot be deactivated. Set another template as default first.' using errcode = '22023';
+  end if;
+  update public.loan_agreement_templates set is_active = p_active where id = p_template_id and organization_id = p_org;
+  if not found then raise exception 'Template not found' using errcode = 'P0002'; end if;
+  perform public.lf_platform_template_audit(p_org, case when p_active then 'template_activated_by_platform' else 'template_deactivated_by_platform' end,
+    p_template_id, '{}'::jsonb);
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Lenders: the admin role manages templates too (owners already do)
+-- ---------------------------------------------------------------------------
+create or replace function public.lf_default_role_permissions(p_role public.app_role)
+returns text[] language sql immutable as $$
+  select case p_role
+    when 'owner' then public.lf_all_permissions()
+    when 'admin' then array[
+      'dashboard.view', 'borrowers.view', 'borrowers.view_all', 'borrowers.create', 'borrowers.edit', 'borrowers.archive',
+      'borrowers.view_sensitive', 'loans.view', 'loans.view_all', 'loans.create', 'loans.approve', 'loans.release', 'loans.cancel',
+      'loans.manage', 'agreements.view', 'agreements.generate', 'agreements.sign_lender', 'payments.view', 'payments.record',
+      'payments.reverse', 'payments.adjust', 'collections.assign', 'reports.view', 'templates.manage']
+    when 'loan_officer' then array[
+      'dashboard.view', 'borrowers.view', 'borrowers.create', 'borrowers.edit', 'borrowers.view_sensitive',
+      'loans.view', 'loans.create', 'agreements.view', 'agreements.generate', 'payments.view']
+    when 'collector' then array[
+      'dashboard.view', 'borrowers.view', 'loans.view', 'payments.view', 'payments.record']
+  end
+$$;
+
+-- existing businesses: give their admin role template management as well
+insert into public.role_permissions (organization_id, role, permission)
+select o.id, 'admin', 'templates.manage' from public.organizations o
+on conflict do nothing;
+
+-- ---------------------------------------------------------------------------
+-- Privileges
+-- ---------------------------------------------------------------------------
+do $$
+declare f text;
+begin
+  foreach f in array array[
+    'public.lf_save_agreement_template(uuid, jsonb)',
+    'public.lf_set_default_template(uuid, uuid)',
+    'public.lf_platform_template_audit(uuid, text, uuid, jsonb)'
+  ] loop
+    execute format('revoke execute on function %s from public, anon, authenticated', f);
+    execute format('grant execute on function %s to service_role', f);
+  end loop;
+end $$;
+
+
+-- ==== 20261125000020_audit_fixes.sql ====
+-- =============================================================================
+-- LendFlow — fixes from the 2026-11-25 system audit
+--  1. reverse_payment: refuse to reverse a payment whose installments were closed by a reschedule
+--     (the money was stranded and the loan could never be paid off).
+--  2. compute_loan_schedule: spreading interest / financed charges over many installments could
+--     leave a negative last installment, which then failed at release.
+--  3. reschedule_loan: semi-monthly loans keep their pay days.
+--  4. is_demo can only be set by seed_demo_data (it bypassed the lending-mode lock).
+-- =============================================================================
+
+-- 1. ---------------------------------------------------------------------
+create or replace function public.reverse_payment(p_payment_id uuid, p_reason text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public.lf_require('payments.reverse');
+  pay public.loan_payments%rowtype;
+  l public.loans%rowtype;
+  a public.payment_allocations%rowtype;
+  v_today date;
+begin
+  if coalesce(trim(p_reason), '') = '' then raise exception 'A reversal reason is required' using errcode = '22023'; end if;
+  select * into pay from public.loan_payments where id = p_payment_id and organization_id = v_org;
+  if not found then raise exception 'Payment not found'; end if;
+  select * into l from public.loans where id = pay.loan_id for update;
+  select * into pay from public.loan_payments where id = p_payment_id for update;
+  if pay.status <> 'posted' then raise exception 'Payment is already reversed' using errcode = '22023'; end if;
+  if exists (select 1 from public.loan_payments x where x.loan_id = pay.loan_id and x.status = 'posted' and x.id <> pay.id
+             and (x.payment_date > pay.payment_date or (x.payment_date = pay.payment_date and x.created_at > pay.created_at))) then
+    raise exception 'Only the most recent payment on a loan can be reversed. Reverse later payments first.' using errcode = '22023';
+  end if;
+  -- the installments this payment paid were closed by a reschedule: putting the money back on them
+  -- would strand it (closed installments take no new payments) and the loan could never be closed
+  if exists (select 1 from public.payment_allocations pa join public.loan_installments ins on ins.id = pa.installment_id
+             where pa.payment_id = pay.id and not pa.is_reversal and ins.status = 'rescheduled') then
+    raise exception 'This payment was made before the loan was rescheduled and can no longer be reversed. Record an adjustment instead.'
+      using errcode = '22023';
+  end if;
+  v_today := public.lf_today(v_org);
+
+  for a in select * from public.payment_allocations where payment_id = pay.id and not is_reversal loop
+    update public.loan_installments set
+      principal_paid = principal_paid - a.principal_amount, interest_paid = interest_paid - a.interest_amount,
+      charges_paid = charges_paid - a.charges_amount, penalty_paid = penalty_paid - a.penalty_amount,
+      interest_waived = interest_waived - a.interest_rebate, paid_at = null
+    where id = a.installment_id;
+    perform public.lf_refresh_installment(a.installment_id, null);
+    insert into public.payment_allocations (organization_id, payment_id, loan_id, installment_id,
+      principal_amount, interest_amount, charges_amount, penalty_amount, interest_rebate, is_reversal)
+    values (v_org, pay.id, pay.loan_id, a.installment_id,
+      -a.principal_amount, -a.interest_amount, -a.charges_amount, -a.penalty_amount, -a.interest_rebate, true);
+  end loop;
+
+  update public.loans set
+    principal_paid = principal_paid - pay.principal_applied, interest_paid = interest_paid - pay.interest_applied,
+    charges_paid = charges_paid - pay.charges_applied, penalties_paid = penalties_paid - pay.penalty_applied,
+    total_paid = total_paid - pay.amount, interest_waived = interest_waived - pay.interest_rebated,
+    last_payment_date = (select max(payment_date) from public.loan_payments where loan_id = pay.loan_id and status = 'posted' and id <> pay.id),
+    status = case when status = 'completed' then 'active'::public.loan_status else status end,
+    completed_at = case when status = 'completed' then null else completed_at end
+  where id = pay.loan_id;
+
+  perform public.lf_post_ledger(pay.loan_id, 'payment_reversal', v_today, pay.amount, -pay.amount,
+    pay.principal_applied, pay.interest_applied, pay.charges_applied, pay.penalty_applied,
+    'Reversal of ' || pay.payment_number || ': ' || p_reason, pay.id);
+  if pay.interest_rebated > 0 then
+    perform public.lf_post_ledger(pay.loan_id, 'adjustment', v_today, pay.interest_rebated, 0, 0, pay.interest_rebated, 0, 0,
+      'Settlement interest rebate reinstated (reversal of ' || pay.payment_number || ')', pay.id);
+  end if;
+
+  update public.loan_payments set status = 'reversed', reversed_at = now(), reversed_by = auth.uid(), reversal_reason = p_reason
+  where id = pay.id;
+  update public.payment_receipts set is_void = true, voided_at = now() where payment_id = pay.id;
+  perform public.lf_system_note(v_org, pay.loan_id, pay.borrower_id,
+    format('Payment %s (PHP %s) reversed: %s', pay.payment_number, to_char(pay.amount, 'FM999,999,999,990.00'), p_reason));
+  return public.lf_payment_result(pay.id);
+end $$;
+
+-- 2. ---------------------------------------------------------------------
+create or replace function public.compute_loan_schedule(p jsonb)
+returns jsonb language plpgsql stable as $$
+declare
+  v_principal numeric;
+  v_method text := coalesce(nullif(p->>'interest_method', ''), 'flat');
+  v_rate numeric := coalesce(nullif(p->>'interest_rate', '')::numeric, 0);
+  v_rate_period text := coalesce(nullif(p->>'rate_period', ''), 'monthly');
+  v_freq text := coalesce(nullif(p->>'repayment_frequency', ''), 'monthly');
+  v_n integer := nullif(p->>'term_count', '')::integer;
+  v_release date := coalesce(nullif(p->>'release_date', '')::date, current_date);
+  v_first date := nullif(p->>'first_due_date', '')::date;
+  v_months_txt text := nullif(trim(p->>'term_months'), '');
+  v_days integer[];
+  v_default_first date;
+  v_months integer;
+  v_target date;
+  v_day_count text := coalesce(nullif(p->>'day_count', ''), '30/360');
+  v_rounding text := coalesce(nullif(p->>'rounding', ''), 'centavo');
+  v_fee_type text := coalesce(nullif(p->>'processing_fee_type', ''), 'none');
+  v_fee_value numeric := coalesce(nullif(p->>'processing_fee_value', '')::numeric, 0);
+  v_other numeric := round(coalesce(nullif(p->>'other_charges', '')::numeric, 0), 2);
+  v_treatment text := coalesce(nullif(p->>'charges_treatment', ''), 'deducted');
+
+  v_scale integer;
+  v_annual numeric;
+  v_r numeric;
+  v_fee numeric := 0;
+  v_charges numeric;
+  v_financed numeric;
+  v_deducted numeric;
+  v_net numeric;
+
+  v_due date[] := '{}';
+  v_rate_k numeric[] := '{}';
+  v_pmt numeric;
+  v_bal numeric;
+  v_int numeric;
+  v_prin numeric;
+  v_chg numeric;
+  v_chg_each numeric;
+  v_int_each numeric;
+  v_prin_each numeric;
+  v_total_interest numeric := 0;
+  v_flat_interest numeric;
+  v_sum_int numeric := 0;
+  v_sum_chg numeric := 0;
+  v_sum_prin numeric := 0;
+  v_rows jsonb := '[]'::jsonb;
+  v_flows numeric[] := '{}';
+  v_prev date;
+  v_lo numeric; v_hi numeric; v_mid numeric; v_res numeric;
+  v_iter integer;
+  k integer;
+  v_irr numeric;
+  v_ppy_freq numeric;
+  v_last_total numeric;
+  v_first_total numeric;
+  v_warnings jsonb := '[]'::jsonb;
+  v_total_repayment numeric;
+begin
+  -- ---------- validation ----------
+  begin
+    v_principal := (p->>'principal')::numeric;
+  exception when others then
+    raise exception 'Loan amount is not a valid number' using errcode = '22023';
+  end;
+  if v_principal is null or v_principal <= 0 then
+    raise exception 'Loan amount must be greater than zero' using errcode = '22023';
+  end if;
+  if v_principal > 999999999999 then
+    raise exception 'Loan amount is too large' using errcode = '22023';
+  end if;
+  if v_method not in ('flat', 'diminishing') then
+    raise exception 'Unknown interest method "%"', v_method using errcode = '22023';
+  end if;
+  if v_rate_period not in ('daily', 'weekly', 'monthly', 'yearly') then
+    raise exception 'Unknown interest rate period "%"', v_rate_period using errcode = '22023';
+  end if;
+  if v_freq not in ('daily', 'weekly', 'semimonthly', 'monthly') then
+    raise exception 'Unknown repayment frequency "%"', v_freq using errcode = '22023';
+  end if;
+  if v_day_count not in ('30/360', 'actual/365', 'actual/actual') then
+    raise exception 'Unknown day-count basis "%"', v_day_count using errcode = '22023';
+  end if;
+  if v_rounding not in ('centavo', 'peso') then
+    raise exception 'Unknown rounding rule "%"', v_rounding using errcode = '22023';
+  end if;
+  if v_rate < 0 then
+    raise exception 'Interest rate cannot be negative' using errcode = '22023';
+  end if;
+  if v_rate > 100 then
+    raise exception 'Interest rate above 100%% per period is not allowed' using errcode = '22023';
+  end if;
+  -- semi-monthly pay days chosen by the lender (e.g. the 5th and 20th, matching the borrower's payday)
+  if v_freq = 'semimonthly' and jsonb_typeof(p->'pay_days') = 'array' and jsonb_array_length(p->'pay_days') > 0 then
+    begin
+      select array_agg(x::integer order by x::integer) into v_days from jsonb_array_elements_text(p->'pay_days') x;
+    exception when others then
+      raise exception 'Pay days must be whole days of the month' using errcode = '22023';
+    end;
+    if array_length(v_days, 1) <> 2 or v_days[1] < 1 or v_days[2] > 31 or v_days[1] = v_days[2] then
+      raise exception 'Choose two different pay days between the 1st and the 31st' using errcode = '22023';
+    end if;
+    if v_days[2] - v_days[1] < 7 or v_days[2] - v_days[1] > 23 then
+      raise exception 'The two pay days must be at least 7 days apart (e.g. the 5th and 20th, or the 15th and 30th)' using errcode = '22023';
+    end if;
+  end if;
+  v_default_first := case when v_days is not null then public.lf_next_payday(v_release + 10, v_days)
+                          else public.lf_default_first_due(v_release, v_freq) end;
+  if v_days is not null and v_first is not null and v_first <> public.lf_next_payday(v_first, v_days) then
+    raise exception 'The first payment date must fall on one of the pay days (the % and %)',
+      public.lf_ordinal(v_days[1]), public.lf_ordinal(v_days[2]) using errcode = '22023';
+  end if;
+
+  -- repayment period in months: the number of installments follows from the frequency
+  if v_months_txt is not null then
+    if v_months_txt !~ '^[0-9]+$' then
+      raise exception 'Repayment period must be a whole number of months' using errcode = '22023';
+    end if;
+    v_months := v_months_txt::integer;
+    if v_months < 1 then
+      raise exception 'Repayment period must be at least 1 month' using errcode = '22023';
+    end if;
+    if v_months > 360 then
+      raise exception 'Repayment period is too long (maximum 360 months)' using errcode = '22023';
+    end if;
+    v_first := coalesce(v_first, v_default_first);
+    v_target := (v_release + make_interval(months => v_months))::date;
+    v_n := case v_freq
+      when 'monthly' then v_months
+      when 'semimonthly' then v_months * 2
+      -- weekly / daily: every actual due date that falls within the repayment period
+      when 'weekly' then case when v_first <= v_target then (v_target - v_first) / 7 + 1 else 0 end
+      when 'daily' then case when v_first <= v_target then (v_target - v_first) + 1 else 0 end
+    end;
+    if v_n < 1 then
+      raise exception 'The first repayment date falls after the end of the repayment period' using errcode = '22023';
+    end if;
+  end if;
+  if v_n is null or v_n < 1 then
+    raise exception 'Repayment duration must be at least 1 installment' using errcode = '22023';
+  end if;
+  if v_n > 3660 then
+    raise exception 'Repayment duration is too long (maximum 3,660 installments)' using errcode = '22023';
+  end if;
+  if v_fee_type not in ('none', 'fixed', 'percent') then
+    raise exception 'Unknown processing fee type "%"', v_fee_type using errcode = '22023';
+  end if;
+  if v_fee_value < 0 or v_other < 0 then
+    raise exception 'Fees and charges cannot be negative' using errcode = '22023';
+  end if;
+  if v_treatment not in ('added', 'deducted') then
+    raise exception 'Unknown charges treatment "%"', v_treatment using errcode = '22023';
+  end if;
+  if v_first is null then
+    v_first := v_default_first;
+  end if;
+  if v_first <= v_release then
+    raise exception 'First repayment date must be after the loan release date' using errcode = '22023';
+  end if;
+
+  v_principal := round(v_principal, 2);
+  v_scale := case when v_rounding = 'peso' then 0 else 2 end;
+
+  -- ---------- rates ----------
+  v_ppy_freq := public.lf_ppy(v_freq, v_day_count);
+  v_annual := v_rate / 100 * public.lf_ppy(v_rate_period, v_day_count);
+  v_r := v_annual / v_ppy_freq;
+
+  -- ---------- charges ----------
+  v_fee := case v_fee_type
+    when 'fixed' then round(v_fee_value, 2)
+    when 'percent' then round(v_principal * v_fee_value / 100, 2)
+    else 0 end;
+  v_charges := v_fee + v_other;
+  v_financed := case when v_treatment = 'added' then v_charges else 0 end;
+  v_deducted := case when v_treatment = 'deducted' then v_charges else 0 end;
+  v_net := v_principal - v_deducted;
+  if v_net <= 0 then
+    raise exception 'Deducted fees and charges cannot equal or exceed the loan amount' using errcode = '22023';
+  end if;
+
+  -- ---------- due dates & per-period rates ----------
+  v_prev := v_release;
+  for k in 1..v_n loop
+    v_due := v_due || case when v_days is not null then public.lf_payday_due(v_first, v_days, k)
+                           else public.lf_due_date(v_first, v_freq, k) end;
+    if v_method = 'diminishing' and v_day_count <> '30/360' then
+      v_rate_k := v_rate_k || (v_annual * public.lf_year_fraction(v_prev, v_due[k], v_day_count));
+    else
+      v_rate_k := v_rate_k || v_r;
+    end if;
+    v_prev := v_due[k];
+  end loop;
+
+  -- the last installment absorbs the rounding difference: never let n-1 rounded-up shares exceed the total
+  v_chg_each := round(v_financed / v_n, 2);
+  if v_chg_each * (v_n - 1) > v_financed then v_chg_each := trunc(v_financed / v_n, 2); end if;
+
+  -- ---------- schedule ----------
+  if v_method = 'flat' then
+    -- Principal x monthly rate x months when the period is given in months (any frequency);
+    -- otherwise Principal x periodic rate x installments (identical for monthly / semi-monthly)
+    v_flat_interest := round(case when v_months is not null then v_principal * v_annual / 12 * v_months
+                                  else v_principal * v_r * v_n end, 2);
+    v_int_each := round(v_flat_interest / v_n, 2);
+    if v_int_each * (v_n - 1) > v_flat_interest then v_int_each := trunc(v_flat_interest / v_n, 2); end if;
+    v_pmt := round((v_principal + v_flat_interest + v_financed) / v_n, v_scale);
+    v_bal := v_principal;
+    for k in 1..v_n loop
+      if k < v_n then
+        v_int := v_int_each;
+        v_chg := v_chg_each;
+        v_prin := v_pmt - v_int - v_chg;
+        if v_prin < 0 then
+          raise exception 'Installment rounding produced a negative principal portion; use centavo rounding' using errcode = '22023';
+        end if;
+        if v_prin > v_bal then v_prin := v_bal; end if;
+      else
+        v_int := v_flat_interest - v_sum_int;
+        v_chg := v_financed - v_sum_chg;
+        v_prin := v_bal;
+      end if;
+      v_rows := v_rows || jsonb_build_object(
+        'installment_no', k, 'due_date', v_due[k],
+        'opening_balance', v_bal, 'principal', v_prin, 'interest', v_int, 'charges', v_chg,
+        'total', v_prin + v_int + v_chg, 'closing_balance', v_bal - v_prin);
+      v_flows := v_flows || (v_prin + v_int + v_chg);
+      v_sum_int := v_sum_int + v_int;
+      v_sum_chg := v_sum_chg + v_chg;
+      v_sum_prin := v_sum_prin + v_prin;
+      v_bal := v_bal - v_prin;
+    end loop;
+    v_total_interest := v_sum_int;
+  else
+    -- diminishing balance: find level payment
+    if v_r = 0 then
+      v_pmt := v_principal / v_n;
+    elsif v_day_count = '30/360' then
+      v_pmt := v_principal * v_r / (1 - power(1 + v_r, -v_n));
+    else
+      -- solve for the level payment that amortizes to zero under actual-day accrual
+      v_lo := v_principal / v_n;
+      v_hi := v_principal * (1 + v_annual * public.lf_year_fraction(v_release, v_due[v_n], v_day_count)) + 1;
+      for v_iter in 1..120 loop
+        v_mid := (v_lo + v_hi) / 2;
+        v_res := v_principal;
+        for k in 1..v_n loop
+          v_res := v_res - (v_mid - round(v_res * v_rate_k[k], 2));
+        end loop;
+        if v_res > 0 then v_lo := v_mid; else v_hi := v_mid; end if;
+        exit when v_hi - v_lo < 0.000001;
+      end loop;
+      v_pmt := (v_lo + v_hi) / 2;
+    end if;
+    v_pmt := round(v_pmt, v_scale);
+    if v_pmt <= 0 then
+      raise exception 'Computed installment is zero; check the loan amount and duration' using errcode = '22023';
+    end if;
+
+    v_bal := v_principal;
+    for k in 1..v_n loop
+      v_int := round(v_bal * v_rate_k[k], 2);
+      if k < v_n then
+        v_prin := v_pmt - v_int;
+        v_chg := v_chg_each;
+        if v_prin < 0 then
+          raise exception 'Installment does not cover interest (negative amortization); adjust the terms' using errcode = '22023';
+        end if;
+        if v_prin >= v_bal then
+          raise exception 'Rounding to whole pesos pays the loan off early; use centavo rounding for these terms' using errcode = '22023';
+        end if;
+      else
+        v_prin := v_bal;
+        v_chg := v_financed - v_sum_chg;
+      end if;
+      v_rows := v_rows || jsonb_build_object(
+        'installment_no', k, 'due_date', v_due[k],
+        'opening_balance', v_bal, 'principal', v_prin, 'interest', v_int, 'charges', v_chg,
+        'total', v_prin + v_int + v_chg, 'closing_balance', v_bal - v_prin);
+      v_flows := v_flows || (v_prin + v_int + v_chg);
+      v_sum_int := v_sum_int + v_int;
+      v_sum_chg := v_sum_chg + v_chg;
+      v_sum_prin := v_sum_prin + v_prin;
+      v_bal := v_bal - v_prin;
+    end loop;
+    v_total_interest := v_sum_int;
+  end if;
+
+  -- integrity checks
+  if v_sum_prin <> v_principal then
+    raise exception 'Internal calculation error: principal mismatch (% vs %)', v_sum_prin, v_principal;
+  end if;
+  if v_sum_chg <> v_financed then
+    raise exception 'Internal calculation error: charges mismatch';
+  end if;
+
+  v_first_total := (v_rows->0->>'total')::numeric;
+  v_last_total := (v_rows->(v_n - 1)->>'total')::numeric;
+  v_total_repayment := v_principal + v_total_interest + v_financed;
+  v_irr := public.lf_irr(v_net, v_flows);
+
+  if v_first > v_default_first + 31 then
+    v_warnings := v_warnings || to_jsonb('The first repayment date is more than one period after release; the first period is longer than the others.'::text);
+  end if;
+  if v_method = 'flat' and v_n > 1 then
+    v_warnings := v_warnings || to_jsonb('Flat interest is computed on the original principal for the full term; the effective interest rate is higher than the nominal rate.'::text);
+  end if;
+
+  return jsonb_build_object(
+    'summary', jsonb_build_object(
+      'principal', v_principal,
+      'interest_method', v_method,
+      'interest_rate', v_rate,
+      'rate_period', v_rate_period,
+      'rate_basis', 'nominal',
+      'day_count', v_day_count,
+      'rounding', v_rounding,
+      'repayment_frequency', v_freq,
+      'term_count', v_n,
+      'term_months', v_months,
+      'pay_days', to_jsonb(v_days),
+      'monthly_rate_pct', round(v_annual / 12 * 100, 6),
+      'installment_count', v_n,
+      'duration_label', case when v_months is not null
+                          then v_months || ' month' || case when v_months <> 1 then 's' else '' end || ' ('
+                               || v_n || ' ' || case v_freq when 'semimonthly' then 'semi-monthly' else v_freq end
+                               || ' payment' || case when v_n <> 1 then 's' else '' end
+                               || case when v_days is not null then ', every ' || public.lf_ordinal(v_days[1]) || ' and ' || public.lf_ordinal(v_days[2]) else '' end || ')'
+                        when v_freq = 'semimonthly' and v_days is not null
+                          then v_n || ' semi-monthly payment' || case when v_n <> 1 then 's' else '' end
+                               || ' (every ' || public.lf_ordinal(v_days[1]) || ' and ' || public.lf_ordinal(v_days[2]) || ')'
+                        when v_freq = 'semimonthly'
+                          then v_n || ' semi-monthly payment' || case when v_n <> 1 then 's' else '' end
+                               || ' (' || public.lf_fmt_num(v_n / 2.0) || ' month' || case when v_n <> 2 then 's' else '' end || ')'
+                          else v_n || ' ' || public.lf_period_label(v_freq, v_n <> 1) end,
+      'release_date', v_release,
+      'first_due_date', v_first,
+      'last_due_date', v_due[v_n],
+      'annual_nominal_rate', round(v_annual * 100, 6),
+      'periodic_rate', v_r,
+      'periodic_rate_pct', round(v_r * 100, 6),
+      'processing_fee_type', v_fee_type,
+      'processing_fee_value', v_fee_value,
+      'processing_fee', v_fee,
+      'other_charges', v_other,
+      'total_charges', v_charges,
+      'charges_treatment', v_treatment,
+      'financed_charges', v_financed,
+      'deducted_charges', v_deducted,
+      'net_proceeds', v_net,
+      'total_interest', v_total_interest,
+      'total_repayment', v_total_repayment,
+      'finance_charge', v_total_interest + v_charges,
+      'installment_amount', v_first_total,
+      'last_installment_amount', v_last_total,
+      'eir_periodic_pct', case when v_irr is null then null else round(v_irr * 100, 6) end,
+      'eir_monthly_pct', case when v_irr is null then null else round(v_irr * v_ppy_freq / 12 * 100, 4) end,
+      'eir_annual_nominal_pct', case when v_irr is null then null else round(v_irr * v_ppy_freq * 100, 4) end,
+      'effective_annual_rate_pct', case when v_irr is null then null
+                                        else round(((power(1 + v_irr::double precision, v_ppy_freq::double precision) - 1) * 100)::numeric, 4) end
+    ),
+    'schedule', v_rows,
+    'disclosures', jsonb_build_array(
+      format('Interest rate entered: %s%% per %s (nominal).', public.lf_fmt_num(v_rate), public.lf_period_label(v_rate_period)),
+      format('Equivalent nominal annual rate: %s%%; rate applied per %s installment period: %s%%.',
+             public.lf_fmt_num(round(v_annual * 100, 4)), public.lf_period_label(v_freq),
+             public.lf_fmt_num(round(v_r * 100, 6))),
+      case when v_method = 'flat'
+        then case when v_months is not null
+          then format('Flat method: interest is computed on the original principal for the whole term (Principal × monthly rate × %s months), spread over %s installments.', v_months, v_n)
+          else 'Flat method: interest is computed on the original principal for the whole term (Principal × periodic rate × number of installments).' end
+        else 'Diminishing balance: interest each period is computed on the outstanding principal; payments are level and the final installment absorbs rounding.' end,
+      format('Day-count basis: %s. Periods per year — monthly 12, semi-monthly 24, weekly 52, daily %s.', v_day_count,
+             case when v_day_count = '30/360' then 360 else 365 end),
+      format('Fees and charges of PHP %s are %s.', to_char(v_charges, 'FM999,999,999,990.00'),
+             case when v_treatment = 'added' then 'added to the installments' else 'deducted from the loan proceeds' end)
+    ),
+    'warnings', v_warnings
+  );
+end $$;
+
+-- 3. ---------------------------------------------------------------------
+create or replace function public.reschedule_loan(p_loan_id uuid, p jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_org uuid := public.lf_require('loans.manage');
+  l public.loans%rowtype;
+  v_today date;
+  v_reason text := nullif(trim(p->>'reason'), '');
+  v_open_interest numeric;
+  v_due_interest numeric;
+  v_open_charges numeric;
+  v_due_charges numeric;
+  v_new_principal numeric;
+  v_params jsonb;
+  v_calc jsonb;
+  v_next integer;
+  v_version integer;
+  r jsonb;
+  v_snap uuid;
+begin
+  if v_reason is null then raise exception 'A reason for rescheduling is required' using errcode = '22023'; end if;
+  select * into l from public.loans where id = p_loan_id and organization_id = v_org for update;
+  if not found or not public.can_access_loan(l.id) then raise exception 'Loan not found'; end if;
+  if l.status not in ('active', 'defaulted') then raise exception 'Only active loans can be rescheduled' using errcode = '22023'; end if;
+  v_today := public.lf_today(v_org);
+  perform public.lf_assess_penalties(l.id, v_today);
+  select * into l from public.loans where id = l.id;
+  if l.outstanding_penalties > 0 then
+    raise exception 'Settle or waive outstanding penalties (PHP %) before rescheduling', to_char(l.outstanding_penalties, 'FM999,999,990.00')
+      using errcode = '22023';
+  end if;
+  if l.outstanding_principal <= 0 then raise exception 'No principal remains to reschedule' using errcode = '22023'; end if;
+
+  select coalesce(sum(interest_due - interest_paid - interest_waived), 0),
+         coalesce(sum(interest_due - interest_paid - interest_waived) filter (where due_date <= v_today), 0),
+         coalesce(sum(charges_due - charges_paid - charges_waived), 0),
+         coalesce(sum(charges_due - charges_paid - charges_waived) filter (where due_date <= v_today), 0)
+    into v_open_interest, v_due_interest, v_open_charges, v_due_charges
+  from public.loan_installments where loan_id = l.id and status in ('pending', 'partially_paid');
+
+  -- interest already due and all open charges (earned fees) are capitalized; unearned future interest is dropped
+  v_new_principal := l.outstanding_principal + v_due_interest + v_open_charges;
+
+  v_params := public.lf_build_loan_params(v_org, jsonb_build_object(
+    'principal', v_new_principal,
+    'interest_method', coalesce(nullif(p->>'interest_method', ''), l.interest_method::text),
+    'interest_rate', coalesce(nullif(p->>'interest_rate', '')::numeric, l.interest_rate),
+    'rate_period', coalesce(nullif(p->>'rate_period', ''), l.rate_period::text),
+    'repayment_frequency', coalesce(nullif(p->>'repayment_frequency', ''), l.repayment_frequency::text),
+    'term_count', nullif(p->>'term_count', '')::integer,
+    'release_date', v_today,
+    'first_due_date', nullif(p->>'first_due_date', ''),
+    'day_count', l.day_count, 'rounding', l.rounding,
+    -- semi-monthly: keep the borrower's pay days unless new ones are given
+    'pay_days', case when coalesce(nullif(p->>'repayment_frequency', ''), l.repayment_frequency::text) = 'semimonthly' then
+      case when jsonb_typeof(p->'pay_days') = 'array' and jsonb_array_length(p->'pay_days') > 0 then p->'pay_days'
+           else to_jsonb(l.pay_days) end end,
+    'processing_fee_type', 'none', 'processing_fee_value', 0, 'other_charges', 0,
+    'charges_treatment', 'added',
+    'penalty_enabled', l.penalty_enabled, 'penalty_type', l.penalty_type, 'penalty_rate', l.penalty_rate,
+    'penalty_grace_days', l.penalty_grace_days, 'allocation_order', to_jsonb(l.allocation_order),
+    'signing_order', l.signing_order, 'witness_count', l.witness_count));
+  v_calc := public.compute_loan_schedule(v_params);
+
+  -- close out the open installments
+  update public.loan_installments set status = 'rescheduled'
+  where loan_id = l.id and status in ('pending', 'partially_paid');
+
+  select coalesce(max(installment_no), 0) + 1 into v_next from public.loan_installments where loan_id = l.id;
+  select coalesce(max(version), 0) + 1 into v_version from public.loan_terms_snapshots where loan_id = l.id;
+
+  insert into public.loan_terms_snapshots (organization_id, loan_id, version, kind, terms, summary, schedule, terms_hash, reason, created_by)
+  values (v_org, l.id, v_version, 'amendment', v_params, v_calc->'summary', v_calc->'schedule',
+          encode(extensions.digest(convert_to((v_params || jsonb_build_object('schedule', v_calc->'schedule'))::text, 'UTF8'), 'sha256'), 'hex'),
+          v_reason, auth.uid())
+  returning id into v_snap;
+
+  for r in select * from jsonb_array_elements(v_calc->'schedule') loop
+    insert into public.loan_installments (organization_id, loan_id, installment_no, due_date, opening_balance,
+      principal_due, interest_due, charges_due, closing_balance, snapshot_version)
+    values (v_org, l.id, v_next + (r->>'installment_no')::integer - 1, (r->>'due_date')::date, (r->>'opening_balance')::numeric,
+      (r->>'principal')::numeric, (r->>'interest')::numeric, (r->>'charges')::numeric, (r->>'closing_balance')::numeric, v_version);
+  end loop;
+
+  -- balances: capitalize due interest + open charges into principal, replace the old open interest with the new schedule's
+  perform public.lf_post_ledger(l.id, 'reschedule', v_today,
+    (v_calc #>> '{summary,total_interest}')::numeric,
+    0,
+    v_new_principal - l.outstanding_principal,
+    (v_calc #>> '{summary,total_interest}')::numeric - v_open_interest,
+    -v_open_charges,
+    0,
+    format('Loan rescheduled (amendment v%s): %s', v_version, v_reason));
+
+  update public.loans set
+    maturity_date = (v_calc #>> '{summary,last_due_date}')::date,
+    installment_amount = (v_calc #>> '{summary,installment_amount}')::numeric,
+    terms_snapshot_id = v_snap,
+    status = 'active'
+  where id = l.id;
+
+  perform public.lf_system_note(v_org, l.id, l.borrower_id,
+    format('Loan rescheduled: PHP %s re-amortized over %s installments from %s. Reason: %s. A new agreement version should be generated and signed.',
+      to_char(v_new_principal, 'FM999,999,999,990.00'), v_calc #>> '{summary,installment_count}',
+      v_calc #>> '{summary,first_due_date}', v_reason));
+  return jsonb_build_object('snapshot_id', v_snap, 'version', v_version, 'summary', v_calc->'summary');
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- 4. Demo flag: only the sample-data loader may create demo loans
+-- ---------------------------------------------------------------------------
+create or replace function public.lf_loan_demo_guard()
+returns trigger language plpgsql set search_path = public as $$
+begin
+  if new.is_demo and (tg_op = 'INSERT' or not old.is_demo)
+     and coalesce(current_setting('lendflow.seeding_demo', true), '') <> 'on' then
+    raise exception 'Demo loans can only be created by the sample-data loader' using errcode = '42501';
+  end if;
+  return new;
+end $$;
+revoke execute on function public.lf_loan_demo_guard() from public, anon, authenticated;
+
+drop trigger if exists lf_loan_demo_guard on public.loans;
+create trigger lf_loan_demo_guard before insert or update of is_demo on public.loans
+  for each row execute function public.lf_loan_demo_guard();
+
+-- seed_demo_data keeps its body; the public entry point now marks the transaction as a demo seed
+alter function public.seed_demo_data() rename to lf_seed_demo_data_impl;
+revoke execute on function public.lf_seed_demo_data_impl() from public, anon, authenticated;
+
+create or replace function public.seed_demo_data()
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare r jsonb;
+begin
+  perform set_config('lendflow.seeding_demo', 'on', true);
+  r := public.lf_seed_demo_data_impl();
+  perform set_config('lendflow.seeding_demo', '', true);
+  return r;
+end $$;
+revoke execute on function public.seed_demo_data() from public, anon;
+grant execute on function public.seed_demo_data() to authenticated;
+

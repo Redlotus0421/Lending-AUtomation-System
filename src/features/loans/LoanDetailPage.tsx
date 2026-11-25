@@ -52,6 +52,10 @@ export default function LoanDetailPage() {
     void qc.invalidateQueries({ queryKey: ['loans'] })
     void qc.invalidateQueries({ queryKey: ['installments'] })
     void qc.invalidateQueries({ queryKey: ['dashboard'] })
+    // payment-side views: reversals, settlements and releases change these too
+    void qc.invalidateQueries({ queryKey: ['payments'] })
+    void qc.invalidateQueries({ queryKey: ['collections'] })
+    void qc.invalidateQueries({ queryKey: ['report'] })
   }
 
   const submit = useMutation({
