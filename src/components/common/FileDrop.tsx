@@ -2,14 +2,14 @@ import { useRef, useState, type ReactNode } from 'react'
 import { FileUp, ImageIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-/** Tap-to-pick / drag-and-drop file input. On phones `capture` opens the camera. */
-export function FileDrop({ onFile, accept = 'image/*,application/pdf', label = 'Upload a file', hint, preview, capture, disabled, className }: {
+/** Tap-to-pick / drag-and-drop file input. On phones the OS offers Photo Library, Take Photo and Choose File
+ *  (no `capture` attribute: it would force the camera and block picking a saved photo or PDF). */
+export function FileDrop({ onFile, accept = 'image/*,application/pdf', label = 'Upload a file', hint, preview, disabled, className }: {
   onFile: (f: File) => void
   accept?: string
   label?: ReactNode
   hint?: ReactNode
   preview?: string | null
-  capture?: boolean
   disabled?: boolean
   className?: string
 }) {
@@ -47,7 +47,6 @@ export function FileDrop({ onFile, accept = 'image/*,application/pdf', label = '
         type="file"
         accept={accept}
         className="hidden"
-        {...(capture ? { capture: 'environment' as const } : {})}
         onChange={(e) => {
           const f = e.target.files?.[0]
           if (f) onFile(f)

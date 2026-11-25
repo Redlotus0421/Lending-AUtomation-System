@@ -434,7 +434,7 @@ function PaymentForm({ loanId, installmentId, defaultType, canChangeLoan, onChan
                 <Button type="button" variant="ghost" size="icon" onClick={() => { setProof(null); setProofPreview(null); proofPath.current = null }} aria-label="Remove file"><X /></Button>
               </div>
             ) : (
-              <FileDrop accept="image/*,application/pdf" capture label={<span className="inline-flex items-center gap-1.5"><Paperclip className="size-3.5" /> Attach photo or PDF</span>}
+              <FileDrop accept="image/*,application/pdf" label={<span className="inline-flex items-center gap-1.5"><Paperclip className="size-3.5" /> Attach photo or PDF</span>}
                 hint="Max 10 MB" onFile={(f) => {
                   if (f.size > 10 * 1024 * 1024) return toast.error('File is larger than 10 MB')
                   setProof(f)

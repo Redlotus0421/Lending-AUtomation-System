@@ -485,7 +485,7 @@ function NewBorrowerStep({ form, files, setFiles, fileErrors, setFileErrors, onB
               className={cn('grid aspect-square w-full place-items-center overflow-hidden rounded-xl border-2 border-dashed bg-slate-50 text-slate-400 hover:border-blue-300', fileErrors.photo && 'border-red-300')}>
               {photoUrl ? <img src={photoUrl} alt="Borrower" className="size-full object-cover" /> : <span className="flex flex-col items-center gap-1 text-xs"><Smartphone className="size-6" /> Take or upload photo</span>}
             </button>
-            <input id="photo-input" type="file" accept="image/*" capture="user" className="hidden"
+            <input id="photo-input" type="file" accept="image/*" className="hidden"
               onChange={(e) => { const f = e.target.files?.[0]; if (f) pick('photo')(f); e.target.value = '' }} />
             {fileErrors.photo && <p className="mt-1 text-xs text-red-600">{fileErrors.photo}</p>}
           </div>
@@ -512,12 +512,12 @@ function NewBorrowerStep({ form, files, setFiles, fileErrors, setFileErrors, onB
           </Field>
           <Field label="ID number" required error={errors.id_number?.message}><Input className="h-11" autoComplete="off" {...register('id_number')} /></Field>
           <div>
-            <FileDrop onFile={pick('id')} capture preview={idUrl} label={files.id ? files.id.name : 'Upload ID'} hint="Photo or PDF of the ID · max 10 MB"
+            <FileDrop onFile={pick('id')} preview={idUrl} label={files.id ? files.id.name : 'Upload ID'} hint="Photo or PDF of the ID · max 10 MB"
               className={cn(fileErrors.id && 'border-red-300')} />
             {fileErrors.id && <p className="mt-1 text-xs text-red-600">{fileErrors.id}</p>}
           </div>
           <div>
-            <FileDrop onFile={pick('atm')} capture preview={atmUrl} label={files.atm ? files.atm.name : 'Upload ATM card'} hint="Front of the card · max 10 MB"
+            <FileDrop onFile={pick('atm')} preview={atmUrl} label={files.atm ? files.atm.name : 'Upload ATM card'} hint="Front of the card · max 10 MB"
               className={cn(fileErrors.atm && 'border-red-300')} />
             {fileErrors.atm && <p className="mt-1 text-xs text-red-600">{fileErrors.atm}</p>}
           </div>

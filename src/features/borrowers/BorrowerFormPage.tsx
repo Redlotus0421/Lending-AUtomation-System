@@ -317,7 +317,7 @@ export default function BorrowerFormPage() {
             <Field label="Email" error={errors.email?.message} className="sm:col-span-2"><Input type="email" className="h-10" autoComplete="email" {...register('email')} /></Field>
             <div className="sm:col-span-2">
               <Field label="Profile photo" hint="Take a clear photo of the borrower's face">
-                <FileDrop accept="image/*" capture label={photo ? photo.file.name : photoUrl ? 'Replace photo' : 'Take or upload a photo'}
+                <FileDrop accept="image/*" label={photo ? photo.file.name : photoUrl ? 'Replace photo' : 'Take or upload a photo'}
                   hint="JPG or PNG, up to 10 MB" preview={photo?.preview || photoUrl} onFile={pickPhoto} />
               </Field>
             </div>
@@ -368,11 +368,11 @@ export default function BorrowerFormPage() {
               <Field label="ID number" error={errors.id_number?.message}><Input className="h-10" autoComplete="off" {...register('id_number')} /></Field>
               <Field label="Expiry date" hint="If applicable"><Input type="date" className="h-10" {...register('id_expiry')} /></Field>
               <Field label="Front of ID" className="sm:col-span-1 lg:col-span-1">
-                <FileDrop accept="image/*,application/pdf" capture label={idFront ? idFront.file.name : idFrontUrl ? 'Replace front image' : 'Capture front of ID'}
+                <FileDrop accept="image/*,application/pdf" label={idFront ? idFront.file.name : idFrontUrl ? 'Replace front image' : 'Capture front of ID'}
                   hint="Ensure all text is readable" preview={idFront?.preview || idFrontUrl} onFile={pickIdFront} />
               </Field>
               <Field label="Back of ID">
-                <FileDrop accept="image/*,application/pdf" capture label={idBack ? idBack.file.name : idBackUrl ? 'Replace back image' : 'Capture back of ID'}
+                <FileDrop accept="image/*,application/pdf" label={idBack ? idBack.file.name : idBackUrl ? 'Replace back image' : 'Capture back of ID'}
                   hint="Optional for single-sided IDs" preview={idBack?.preview || idBackUrl} onFile={pickIdBack} />
               </Field>
               <div className="flex items-start gap-2 rounded-lg bg-slate-50 p-3 text-xs text-muted-foreground">
