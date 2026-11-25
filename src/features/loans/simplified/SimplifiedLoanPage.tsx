@@ -771,7 +771,7 @@ function LoanStep({ type, principal, setPrincipal, term, setTerm, rate, setRate,
             )}
             {(freq === 'monthly' || freq === 'weekly' || freq === 'daily') && (
               <div className="sm:col-span-2">
-                <CollectionDatePicker frequency={freq} value={firstDue} onChange={setFirstDue} />
+                <CollectionDatePicker key={freq} frequency={freq} value={firstDue} onChange={setFirstDue} />
               </div>
             )}
             <Field label="Repayment period (months)" required

@@ -31,6 +31,7 @@ export function defaultFirstDue(freq: string, release = todayManila()): string {
 export function collectionDates(freq: string, day: number, release = todayManila()): string[] {
   const out: string[] = []
   if (freq === 'monthly') {
+    if (!(Number.isInteger(day) && day >= 1 && day <= 31)) return out
     const min = addDays(release, 7)
     const [y0, m0] = release.split('-').map(Number)
     for (let i = 0; out.length < 3 && i < 24; i++) {
@@ -41,8 +42,9 @@ export function collectionDates(freq: string, day: number, release = todayManila
       if (d >= min) out.push(d)
     }
   } else if (freq === 'weekly') {
-    let d = addDays(release, 1)
-    while (weekdayOf(d) !== day) d = addDays(d, 1)
+    if (!(Number.isInteger(day) && day >= 0 && day <= 6)) return out
+    const start = addDays(release, 1)
+    const d = addDays(start, (day - weekdayOf(start) + 7) % 7)
     for (let i = 0; i < 3; i++) out.push(addDays(d, i * 7))
   } else {
     for (let i = 1; i <= 4; i++) out.push(addDays(release, i))
@@ -66,9 +68,9 @@ export function CollectionDatePicker({ frequency, value, onChange, releaseDate }
   const freq = frequency as Freq
   const release = releaseDate || todayManila()
   const current = validFirstDue(value, release) ?? defaultFirstDue(freq, release)
+  // "day" means a day of the month (monthly) or of the week (weekly); the parent remounts this
+  // picker (key={frequency}) when the frequency changes, so it never carries over between them
   const [day, setDay] = useState(() => (freq === 'weekly' ? weekdayOf(current) : dayOf(current)))
-  // switching between monthly and weekly changes what "day" means
-  useEffect(() => { setDay(freq === 'weekly' ? weekdayOf(current) : dayOf(current)) }, [freq]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const options = collectionDates(freq, day, release)
   const selected = options.includes(current) ? current : null
