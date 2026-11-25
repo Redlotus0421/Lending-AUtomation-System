@@ -1,7 +1,7 @@
 // Read the text of an uploaded terms file in the browser (no upload, no internet service).
 // PDF via pdf.js (bundled with the app), Word .docx via a small ZIP/XML reader, plain text as is.
-import * as pdfjs from 'pdfjs-dist'
-import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs' // legacy: Safari 18 lacks APIs the modern build needs
+import workerSrc from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import { docxToText } from '../../../../supabase/functions/_shared/docx'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc

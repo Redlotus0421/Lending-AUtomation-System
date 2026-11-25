@@ -9,6 +9,7 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { useAuth } from '@/features/auth/AuthProvider'
 import { paymentsService } from '@/services/payments'
 import { errorMessage } from '@/lib/errors'
+import { openInNewTab } from '@/lib/open'
 import { fmtDate, fmtDateTime, longDate, peso, titleCase, toNumber } from '@/lib/format'
 import { printElement } from '@/lib/export'
 import { cn } from '@/lib/utils'
@@ -44,8 +45,7 @@ export default function PaymentDetailPage() {
   const downloadPdf = async () => {
     setPdfBusy(true)
     try {
-      const { url } = await paymentsService.receiptPdf(p.id, true)
-      window.open(url, '_blank', 'noopener')
+      await openInNewTab(async () => (await paymentsService.receiptPdf(p.id, true)).url)
     } catch (e) {
       toast.error(errorMessage(e))
     } finally {
@@ -55,7 +55,7 @@ export default function PaymentDetailPage() {
   const openProof = async () => {
     setProofBusy(true)
     try {
-      window.open(await paymentsService.proofUrl(p.proof_path), '_blank', 'noopener')
+      await openInNewTab(() => paymentsService.proofUrl(p.proof_path))
     } catch (e) {
       toast.error(errorMessage(e))
     } finally {

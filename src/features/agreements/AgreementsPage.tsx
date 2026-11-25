@@ -11,6 +11,7 @@ import {
 import { useAuth } from '@/features/auth/AuthProvider'
 import { agreementsService, type AgreementListItem } from '@/services/agreements'
 import { errorMessage } from '@/lib/errors'
+import { openInNewTab } from '@/lib/open'
 import { fmtDateTime } from '@/lib/format'
 
 const TABS = [
@@ -38,7 +39,7 @@ export default function AgreementsPage() {
     const path = a.signed_pdf_path ?? a.current_pdf_path ?? a.unsigned_pdf_path
     if (!path) return
     try {
-      window.open(await agreementsService.pdfUrl(path, `${a.agreement_number}${a.signed_pdf_path ? '-signed' : ''}.pdf`), '_blank')
+      await openInNewTab(() => agreementsService.pdfUrl(path, `${a.agreement_number}${a.signed_pdf_path ? '-signed' : ''}.pdf`))
     } catch (e) {
       toast.error(errorMessage(e))
     }

@@ -22,6 +22,7 @@ import { usersService } from '@/services/org'
 import { newIdempotencyKey } from '@/services/api'
 import { PAYMENT_METHODS } from '@/lib/constants'
 import { errorMessage } from '@/lib/errors'
+import { openInNewTab } from '@/lib/open'
 import { fmtDate, peso, todayManila, toNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { InstallmentView, LoanView, PaymentResult } from '@/types/db'
@@ -555,8 +556,7 @@ function SuccessView({ result, onClose, onAnother }: { result: PaymentResult; on
   const download = async () => {
     setDownloading(true)
     try {
-      const { url } = await paymentsService.receiptPdf(result.payment_id, true)
-      window.open(url, '_blank', 'noopener')
+      await openInNewTab(async () => (await paymentsService.receiptPdf(result.payment_id, true)).url)
     } catch (e) {
       toast.error(errorMessage(e))
     } finally {

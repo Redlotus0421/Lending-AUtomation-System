@@ -26,20 +26,10 @@ import { agreementsService } from '@/services/agreements'
 import { DOCUMENT_TYPES, RELATIONSHIPS } from '@/lib/constants'
 import { durationLabel, fmtDate, fmtDateTime, normalizePhMobile, peso, phMobile, timeAgo, titleCase, toNumber } from '@/lib/format'
 import { errorMessage } from '@/lib/errors'
+import { openInNewTab } from '@/lib/open'
 import type { BorrowerDocument, Guarantor, LoanView } from '@/types/db'
 import { BorrowerAvatar, BorrowerStatusBadge, RiskBadge, useBorrowerFileUrl } from './shared'
 
-async function openInNewTab(getUrl: () => Promise<string>) {
-  const w = window.open('', '_blank')
-  try {
-    const url = await getUrl()
-    if (w) w.location.href = url
-    else window.location.href = url
-  } catch (e) {
-    w?.close()
-    toast.error(errorMessage(e))
-  }
-}
 
 function IdImage({ path, label }: { path: string | null; label: string }) {
   const url = useBorrowerFileUrl(path)
@@ -324,7 +314,7 @@ function DocumentsTab({ borrowerId }: { borrowerId: string }) {
                   <p className="truncate text-sm font-medium">{d.title || d.file_name}</p>
                   <p className="text-xs text-muted-foreground">{typeLabel(d.document_type)} · {d.file_size ? `${Math.max(1, Math.round(d.file_size / 1024))} KB · ` : ''}{fmtDate(d.created_at)}</p>
                 </div>
-                <Button size="icon" variant="ghost" aria-label="Open document" onClick={() => void openInNewTab(() => borrowersService.fileUrl(d.file_path))}><Eye /></Button>
+                <Button size="icon" variant="ghost" aria-label="Open document" onClick={() => openInNewTab(() => borrowersService.fileUrl(d.file_path)).catch((err) => toast.error(errorMessage(err)))}><Eye /></Button>
                 {can('borrowers.edit') && <Button size="icon" variant="ghost" aria-label="Delete document" onClick={() => setToDelete(d)}><Trash2 className="text-red-600" /></Button>}
               </li>
             ))}
@@ -375,7 +365,7 @@ function AgreementsTab({ borrowerId }: { borrowerId: string }) {
       cell: (a) => {
         const path = a.signed_pdf_path ?? a.current_pdf_path ?? a.unsigned_pdf_path
         return path ? (
-          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); void openInNewTab(() => agreementsService.pdfUrl(path)) }}>
+          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openInNewTab(() => agreementsService.pdfUrl(path)).catch((err) => toast.error(errorMessage(err))) }}>
             <Eye /> {a.signed_pdf_path ? 'Signed PDF' : 'PDF'}
           </Button>
         ) : null

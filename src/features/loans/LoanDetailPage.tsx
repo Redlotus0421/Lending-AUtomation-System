@@ -26,6 +26,7 @@ import { loansService } from '@/services/loans'
 import { borrowersService } from '@/services/borrowers'
 import { paymentsService } from '@/services/payments'
 import { errorMessage } from '@/lib/errors'
+import { openInNewTab } from '@/lib/open'
 import { fmtDate, fmtDateTime, METHOD_LABEL, peso, phMobile, timeAgo, titleCase, toNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { LoanCalculation, LoanView } from '@/types/db'
@@ -343,7 +344,7 @@ function PaymentsTab({ loan, onChanged }: { loan: LoanView; onChanged: () => voi
                 <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                   <Button size="sm" variant="ghost" disabled={busyReceipt === p.id} onClick={async () => {
                     setBusyReceipt(p.id)
-                    try { window.open((await paymentsService.receiptPdf(p.id)).url, '_blank') } catch (e) { toast.error(errorMessage(e)) } finally { setBusyReceipt(null) }
+                    try { await openInNewTab(async () => (await paymentsService.receiptPdf(p.id)).url) } catch (e) { toast.error(errorMessage(e)) } finally { setBusyReceipt(null) }
                   }}>{busyReceipt === p.id ? <Spinner /> : <Receipt />} Receipt</Button>
                   {p.status === 'posted' && can('payments.reverse') && <Button size="sm" variant="ghost" className="text-red-600" onClick={() => setReverse(p.id)}><Undo2 /> Reverse</Button>}
                 </div>

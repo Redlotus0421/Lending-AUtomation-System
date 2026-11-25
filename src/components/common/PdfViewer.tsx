@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import * as pdfjs from 'pdfjs-dist'
-import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+// The legacy build: the default (modern) build of pdf.js 6 relies on very recent JavaScript
+// (Map.prototype.getOrInsertComputed, Math.sumPrecise, ...) that Safari on iOS/iPadOS 18 lacks,
+// so pages never rendered there. The legacy build ships the fallbacks.
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs'
+import workerSrc from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import { Download, Maximize2, Minimize2, Minus, Plus, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
