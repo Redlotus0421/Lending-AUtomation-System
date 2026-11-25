@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-do
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   BarChart3, Bell, CalendarClock, ClipboardList, FileSignature, FileText, HandCoins, LayoutDashboard, LogOut, Menu, Package,
-  PlusCircle, ScrollText, Settings, ShieldAlert, ShieldCheck, UserCog, Users, Wallet,
+  NotebookTabs, PlusCircle, ScrollText, Settings, ShieldAlert, ShieldCheck, UserCog, Users, Wallet,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/features/auth/AuthProvider'
@@ -41,6 +41,8 @@ export const NAV: { section: string; items: NavItem[] }[] = [
       { to: '/payments', label: 'Payments & Collections', icon: <Wallet />, perm: 'payments.view' },
       { to: '/due', label: 'Due Payments', icon: <CalendarClock />, perm: 'payments.view' },
       { to: '/overdue', label: 'Overdue Loans', icon: <ShieldAlert />, perm: 'payments.view' },
+      // owners and admins (reports.view): a borrower's whole schedule and payment history
+      { to: '/records', label: 'Records', icon: <NotebookTabs />, perm: 'reports.view' },
     ],
   },
   {

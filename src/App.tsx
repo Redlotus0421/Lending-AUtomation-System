@@ -25,6 +25,7 @@ const PaymentsPage = lazy(() => import('@/features/payments/PaymentsPage'))
 const PaymentDetailPage = lazy(() => import('@/features/payments/PaymentDetailPage'))
 const DuePaymentsPage = lazy(() => import('@/features/payments/DuePaymentsPage'))
 const OverdueLoansPage = lazy(() => import('@/features/payments/OverdueLoansPage'))
+const RecordsPage = lazy(() => import('@/features/payments/RecordsPage'))
 const ProductsPage = lazy(() => import('@/features/products/ProductsPage'))
 const ReportsPage = lazy(() => import('@/features/reports/ReportsPage'))
 const UsersPage = lazy(() => import('@/features/users/UsersPage'))
@@ -99,6 +100,7 @@ export default function App() {
           <Route path="payments/:id" element={guard('payments.view', <PaymentDetailPage />)} />
           <Route path="due" element={guard('payments.view', <DuePaymentsPage />)} />
           <Route path="overdue" element={guard('payments.view', <OverdueLoansPage />)} />
+          <Route path="records" element={guard('reports.view', <RecordsPage />)} />
 
           <Route path="products" element={guard(['products.manage', 'loans.create'], <ProductsPage />)} />
           <Route path="reports" element={guard('reports.view', <ReportsPage />)} />
