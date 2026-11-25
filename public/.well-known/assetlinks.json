@@ -1,0 +1,10 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.lendflow.app",
+      "sha256_cert_fingerprints": ["9E:47:7B:13:AA:09:A3:2C:EB:68:FB:76:0F:45:89:E5:0A:13:F5:59:28:CD:81:F0:A1:D8:39:46:9B:25:15:D9"]
+    }
+  }
+]

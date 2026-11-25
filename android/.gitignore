@@ -1,0 +1,14 @@
+.gradle/
+build/
+local.properties
+supabase.properties
+keystore.properties
+*.jks
+*.keystore
+.idea/
+*.iml
+.DS_Store
+captures/
+.externalNativeBuild
+.cxx
+supabase.local.properties

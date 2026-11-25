@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { Ban, Building2, FileSignature, KeyRound, LineChart, ShieldCheck } from 'lucide-react'
+import { Ban, Building2, Download, FileSignature, KeyRound, LineChart, ShieldCheck, Smartphone } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { PasswordInput } from '@/components/ui/password-input'
@@ -99,7 +99,28 @@ export function LoginPage() {
       <p className="mt-6 text-center text-sm text-muted-foreground">
         Need an account for your lending business? Contact your LendFlow administrator.
       </p>
+      <AndroidAppDownload />
     </AuthLayout>
+  )
+}
+
+/** Released Android app (native, same accounts and data as this site). Bump with each new APK. */
+export const ANDROID_APP = { version: '1.0', href: '/downloads/LendFlow-v1.0.apk', file: 'LendFlow-v1.0.apk', minAndroid: '8.0' }
+
+function AndroidAppDownload() {
+  return (
+    <div className="mt-6 flex items-center gap-3 rounded-xl border bg-white p-3 shadow-card">
+      <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-[#142B4A] text-white"><Smartphone className="size-5" /></span>
+      <div className="min-w-0 flex-1 leading-tight">
+        <p className="text-sm font-semibold">LendFlow for Android</p>
+        <p className="text-xs text-muted-foreground">Version {ANDROID_APP.version} · APK · Android {ANDROID_APP.minAndroid}+</p>
+      </div>
+      <Button asChild size="sm" variant="outline">
+        <a href={ANDROID_APP.href} download={ANDROID_APP.file} aria-label={`Download the LendFlow Android app version ${ANDROID_APP.version}`}>
+          <Download /> Download
+        </a>
+      </Button>
+    </div>
   )
 }
 

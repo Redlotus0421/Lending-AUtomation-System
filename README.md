@@ -138,11 +138,36 @@ Business logic is **not** in React components:
 
 Run them with `npm run test:db`.
 
-## 5. Future Android app
+## 5. Android app (native)
 
-All operations are Supabase RPCs / Edge Functions with JWT auth and RLS, so a native client reuses them unchanged:
-`create_loan`, `preview_loan`, `record_payment`, `get_settlement_quote`, `signing_session_create`,
-`agreement-generate`, `agreement-sign`, `public-signing`, `receipt-pdf`, storage buckets for photos/IDs, etc.
+`android/` is a native Android app (Kotlin + Jetpack Compose — not a WebView) with the same features, roles and
+permissions as the web app. It calls the same Supabase project: the same RPCs, views, RLS policies, Edge Functions and
+storage buckets, so every business rule is enforced by the server for both clients.
+
+- **Real-time sync:** both clients subscribe to Supabase Realtime (`postgres_changes`, RLS-filtered) and re-load the
+  visible screens when another device changes data. Apply migration `20261126000022_realtime_sync.sql`
+  (`npx supabase db push`) to enable it; until then the app refreshes on resume and every 30 seconds.
+- **Bluetooth thermal printing:** paired Bluetooth Classic (SPP) and BLE ESC/POS printers, 58 mm / 80 mm, plus Android
+  system printing; receipts are built from the frozen receipt snapshot exactly like the web printout.
+- **Signing links** (`https://<site>/sign/<token>`) open the native signing screen when the app is installed
+  (`public/.well-known/assetlinks.json` verifies the link for the release signing key).
+
+### Build
+
+Requirements: JDK 17 and the Android SDK (Android Studio installs both).
+
+```bash
+cd android
+cp supabase.properties.example supabase.properties   # same public URL + anon key as the web app
+./gradlew assembleRelease                            # app/build/outputs/apk/release/app-release.apk
+```
+
+Release signing reads `android/keystore.properties` (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`). The
+keystore and its passwords are not in git: **back them up** — every future update must be signed with the same key.
+Debug builds can point at a local Supabase stack with `android/supabase.local.properties`.
+
+The released APK is served from `public/downloads/` and linked on the sign-in page (`ANDROID_APP` in
+`src/features/auth/AuthPages.tsx`); bump `versionCode`/`versionName` in `android/app/build.gradle.kts` for each release.
 
 ## 6. Compliance notice
 

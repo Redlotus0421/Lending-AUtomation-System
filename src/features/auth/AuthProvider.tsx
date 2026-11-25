@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { orgService } from '@/services/org'
 import { clearAllDrafts } from '@/features/loans/wizard'
+import { startRealtimeSync } from '@/lib/realtime'
 import type { Access, Organization, Settings } from '@/types/db'
 
 type AuthState = {
@@ -79,6 +80,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       sub.subscription.unsubscribe()
     }
   }, [loadAccess, qc])
+
+  // Live updates from other devices (web and Android) while signed in to a workspace
+  const realtimeUser = session?.user.id
+  const realtimeOrg = access?.organization_id
+  useEffect(() => {
+    if (!realtimeUser || !realtimeOrg) return
+    return startRealtimeSync(qc)
+  }, [realtimeUser, realtimeOrg, qc])
 
   // Session timeout (Settings → Security)
   useEffect(() => {
