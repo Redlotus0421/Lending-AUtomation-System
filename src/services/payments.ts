@@ -14,6 +14,8 @@ export type PaymentInput = {
   payment_type?: 'regular' | 'settlement'
   installment_id?: string | null
   received_by?: string | null
+  /** amount withdrawn from the borrower's ATM; cash returned = atm_withdrawal - amount */
+  atm_withdrawal?: number | null
   idempotency_key: string
 }
 

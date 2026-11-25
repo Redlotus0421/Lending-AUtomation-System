@@ -56,12 +56,26 @@ export async function renderReceiptPdf(r: Record<string, any>, opts: { isVoid: b
   w.textRight(money(r.amount), right - 10, y - 14, w.fonts.sansBold, 15, COLORS.text)
   y -= 48
 
-  w.text('ALLOCATION', w.margin.left, y, { font: w.fonts.sansBold, size: 8, color: COLORS.navy })
+  if (r.atm_withdrawal != null) {
+    // collected from the borrower's ATM: withdrawal - loan payment = cash returned
+    w.text('ATM COLLECTION', w.margin.left, y, { font: w.fonts.sansBold, size: 8, color: COLORS.navy })
+    y -= 14
+    row('ATM withdrawal', money(r.atm_withdrawal))
+    row('Loan payment', money(r.amount))
+    w.page.drawLine({ start: { x: w.margin.left, y: y + 6 }, end: { x: right, y: y + 6 }, thickness: 0.5, color: COLORS.rule })
+    y -= 4
+    row('Cash returned to borrower', money(r.cash_returned ?? Number(r.atm_withdrawal) - Number(r.amount)), true)
+    y -= 8
+  }
+
+  w.text('ALLOCATION',w.margin.left, y, { font: w.fonts.sansBold, size: 8, color: COLORS.navy })
   y -= 14
   row('Principal', money(r.principal_paid))
   row('Interest', money(r.interest_paid))
-  row('Charges', money(r.charges_paid))
-  row('Penalties', money(r.penalty_paid))
+  // with the ATM block the A5 page is fuller: leave out allocation lines that are zero
+  const compact = r.atm_withdrawal != null
+  if (!compact || Number(r.charges_paid) > 0) row('Charges', money(r.charges_paid))
+  if (!compact || Number(r.penalty_paid) > 0) row('Penalties', money(r.penalty_paid))
   if (Number(r.interest_rebated) > 0) row('Unearned interest rebated', money(r.interest_rebated))
   w.page.drawLine({ start: { x: w.margin.left, y: y + 6 }, end: { x: right, y: y + 6 }, thickness: 0.5, color: COLORS.rule })
   y -= 4

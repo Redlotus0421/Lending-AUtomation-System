@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm, useWatch } from 'react-hook-form'
@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import {
-  AlertTriangle, ArrowLeft, Banknote, CheckCircle2, Download, FileText, Info, Paperclip, Plus, Receipt, Search, X,
+  AlertTriangle, ArrowLeft, Banknote, CheckCircle2, FileText, Info, Paperclip, Plus, Receipt, Search, X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -22,11 +22,11 @@ import { usersService } from '@/services/org'
 import { newIdempotencyKey } from '@/services/api'
 import { PAYMENT_METHODS } from '@/lib/constants'
 import { errorMessage } from '@/lib/errors'
-import { openInNewTab } from '@/lib/open'
 import { fmtDate, peso, todayManila, toNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { InstallmentView, LoanView, PaymentResult } from '@/types/db'
 import { useIsMobile } from './useIsMobile'
+import { ReceiptCard } from './receipt/ReceiptCard'
 
 export type RecordPaymentDialogProps = {
   open: boolean
@@ -183,9 +183,17 @@ const schema = z.object({
   reference_no: z.string().max(80).optional(),
   notes: z.string().max(500).optional(),
   received_by: z.string().optional(),
+  from_atm: z.boolean(),
+  atm_withdrawal: z.string().optional(),
 }).superRefine((v, ctx) => {
   if (v.method !== 'cash' && !v.reference_no?.trim()) {
     ctx.addIssue({ code: 'custom', path: ['reference_no'], message: 'A transaction reference is required for non-cash payments' })
+  }
+  if (v.from_atm) {
+    const w = v.atm_withdrawal?.trim() ?? ''
+    if (!w) ctx.addIssue({ code: 'custom', path: ['atm_withdrawal'], message: 'Enter the amount withdrawn from the ATM' })
+    else if (!/^\d+(\.\d{1,2})?$/.test(w)) ctx.addIssue({ code: 'custom', path: ['atm_withdrawal'], message: 'Use at most 2 decimal places' })
+    else if (Number(w) < Number(v.amount || 0)) ctx.addIssue({ code: 'custom', path: ['atm_withdrawal'], message: 'The withdrawal cannot be less than the loan payment' })
   }
 })
 type FormValues = z.infer<typeof schema>
@@ -229,9 +237,13 @@ function PaymentForm({ loanId, installmentId, defaultType, canChangeLoan, onChan
       reference_no: '',
       notes: '',
       received_by: access?.user_id ?? '',
+      from_atm: false,
+      atm_withdrawal: '',
     },
   })
-  const [type, paymentDate, method, targetId, amount] = useWatch({ control: form.control, name: ['payment_type', 'payment_date', 'method', 'installment_id', 'amount'] })
+  const [type, paymentDate, method, targetId, amount, fromAtm, atmWithdrawal] = useWatch({
+    control: form.control, name: ['payment_type', 'payment_date', 'method', 'installment_id', 'amount', 'from_atm', 'atm_withdrawal'],
+  })
   const loan = loanQ.data
   const installments = useMemo(() => instQ.data ?? [], [instQ.data])
 
@@ -297,6 +309,7 @@ function PaymentForm({ loanId, installmentId, defaultType, canChangeLoan, onChan
         payment_type: v.payment_type,
         installment_id: v.payment_type === 'regular' ? v.installment_id || null : null,
         received_by: v.received_by || null,
+        atm_withdrawal: v.from_atm && v.atm_withdrawal ? Number(Number(v.atm_withdrawal).toFixed(2)) : null,
         idempotency_key: idemKey.current,
       })
     },
@@ -403,6 +416,39 @@ function PaymentForm({ loanId, installmentId, defaultType, canChangeLoan, onChan
             </p>
           )}
 
+          {/* ATM collection: the collector withdraws from the borrower's ATM, keeps the payment, returns the rest */}
+          <div className={cn('rounded-xl border p-3 transition', fromAtm ? 'border-blue-200 bg-blue-50/50' : 'bg-white')}>
+            <label className="flex cursor-pointer items-center gap-3">
+              <input type="checkbox" className="size-5 accent-[#2563EB]" {...form.register('from_atm')} />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium">Collected from the borrower's ATM</span>
+                <span className="block text-xs text-muted-foreground">Enter the amount withdrawn; the change returned to the borrower is computed for the receipt.</span>
+              </span>
+            </label>
+            {fromAtm && (() => {
+              const w = Number(atmWithdrawal) || 0
+              const change = Math.round((w - amt) * 100) / 100
+              return (
+                <div className="mt-3 space-y-2">
+                  <Field label="ATM withdrawal (₱)" required error={e.atm_withdrawal?.message}>
+                    <div className="relative">
+                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 font-semibold text-muted-foreground">₱</span>
+                      <Input inputMode="decimal" autoComplete="off" placeholder="0.00" className="tabular h-12 pl-8 text-lg font-semibold"
+                        {...form.register('atm_withdrawal', { setValueAs: (v: string) => String(v ?? '').replace(/[,\s₱]/g, '') })} />
+                    </div>
+                  </Field>
+                  <dl className="tabular space-y-1 rounded-lg bg-white px-3 py-2 text-sm ring-1 ring-slate-200">
+                    <div className="flex justify-between"><dt className="text-muted-foreground">ATM withdrawal</dt><dd>{peso(w)}</dd></div>
+                    <div className="flex justify-between"><dt className="text-muted-foreground">Loan payment</dt><dd>− {peso(amt)}</dd></div>
+                    <div className={cn('flex justify-between border-t pt-1 font-semibold', change < 0 && 'text-red-600')}>
+                      <dt>Cash returned to borrower</dt><dd>{peso(change)}</dd>
+                    </div>
+                  </dl>
+                </div>
+              )
+            })()}
+          </div>
+
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Payment date" required error={e.payment_date?.message}>
               <Input type="date" max={todayManila()} className="h-12" {...form.register('payment_date')} />
@@ -451,7 +497,7 @@ function PaymentForm({ loanId, installmentId, defaultType, canChangeLoan, onChan
 
           <div className="sticky bottom-0 -mx-1 flex flex-col gap-2 border-t bg-background/95 px-1 pt-3 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
             <p className="text-xs text-muted-foreground">
-              {amt > 0 ? <>Recording <b className="tabular text-foreground">{peso(amt)}</b> · {fmtDate(paymentDate)}</> : 'Duplicate submissions are blocked automatically.'}
+              {amt > 0 ? <>Recording <b className="tabular text-foreground">{peso(amt)}</b> · {fmtDate(paymentDate)}{fromAtm && Number(atmWithdrawal) >= amt ? <> · return <b className="tabular text-foreground">{peso(Number(atmWithdrawal) - amt)}</b></> : null}</> : 'Duplicate submissions are blocked automatically.'}
             </p>
             <Button type="submit" className="h-12 w-full text-base sm:w-auto sm:px-8"
               disabled={mutation.isPending || exceeds || (type === 'settlement' && !settleQ.data)}>
@@ -546,68 +592,25 @@ function SettlementQuoteBox({ loading, error, quote, paymentDate }: {
 // ---------------------------------------------------------------------------
 function SuccessView({ result, onClose, onAnother }: { result: PaymentResult; onClose: () => void; onAnother: () => void }) {
   const navigate = useNavigate()
-  const [downloading, setDownloading] = useState(false)
-  const lines: [string, unknown][] = [
-    ['Penalties', result.penalty_applied],
-    ['Charges', result.charges_applied],
-    ['Interest', result.interest_applied],
-    ['Principal', result.principal_applied],
-  ]
-  const download = async () => {
-    setDownloading(true)
-    try {
-      await openInNewTab(async () => (await paymentsService.receiptPdf(result.payment_id, true)).url)
-    } catch (e) {
-      toast.error(errorMessage(e))
-    } finally {
-      setDownloading(false)
-    }
-  }
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col items-center text-center">
-        <span className="grid size-14 place-items-center rounded-full bg-green-100 text-green-600"><CheckCircle2 className="size-8" /></span>
-        <p className="mt-3 text-lg font-semibold">{result.duplicate ? 'Payment already recorded' : 'Payment posted'}</p>
-        <p className="tabular mt-1 text-3xl font-semibold tracking-tight">{peso(result.amount)}</p>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {result.payment_number} · Receipt <b className="text-foreground">{result.receipt_number}</b>
-        </p>
-        {result.duplicate && (
-          <p className="mt-2 rounded-md bg-blue-50 px-3 py-1.5 text-xs text-blue-800">A payment with this submission ID already exists — no duplicate was created.</p>
-        )}
-      </div>
-
-      <div className="rounded-xl border bg-white">
-        <p className="border-b px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Allocation</p>
-        <dl className="space-y-1.5 px-4 py-3 text-sm">
-          {lines.map(([l, v]) => (
-            <div key={l} className={cn('flex justify-between', toNumber(v) === 0 && 'text-muted-foreground')}>
-              <dt>{l}</dt><dd className="tabular">{peso(v)}</dd>
-            </div>
-          ))}
-          {toNumber(result.interest_rebated) > 0 && (
-            <div className="flex justify-between text-teal-700"><dt>Unearned interest rebated</dt><dd className="tabular">{peso(result.interest_rebated)}</dd></div>
-          )}
-        </dl>
-        <div className="flex items-center justify-between rounded-b-xl bg-slate-50 px-4 py-3">
-          <span className="text-sm font-medium">Remaining balance</span>
-          <span className="tabular text-base font-semibold">{peso(result.total_outstanding)}</span>
+    <div className="space-y-4">
+      <div className="flex items-center gap-3 rounded-xl bg-green-50 p-3">
+        <span className="grid size-10 shrink-0 place-items-center rounded-full bg-green-100 text-green-600"><CheckCircle2 className="size-6" /></span>
+        <div className="min-w-0">
+          <p className="font-semibold">{result.duplicate ? 'Payment already recorded' : 'Payment posted'} · <span className="tabular">{peso(result.amount)}</span></p>
+          <p className="truncate text-xs text-muted-foreground">{result.payment_number} · Receipt {result.receipt_number} · Balance {peso(result.total_outstanding)}</p>
         </div>
       </div>
-      {result.loan_status === 'completed' && (
-        <p className="rounded-lg bg-green-50 p-3 text-center text-sm font-medium text-green-800">🎉 The loan is fully paid and marked completed.</p>
+      {result.duplicate && (
+        <p className="rounded-md bg-blue-50 px-3 py-1.5 text-xs text-blue-800">A payment with this submission ID already exists — no duplicate was created.</p>
       )}
-
-      <div className="grid gap-2 sm:grid-cols-2">
-        <ActionButton icon={<Receipt />} onClick={() => { onClose(); navigate(`/payments/${result.payment_id}`) }}>View / print receipt</ActionButton>
-        <ActionButton icon={downloading ? <Spinner /> : <Download />} onClick={() => void download()} disabled={downloading}>Download PDF</ActionButton>
-        <ActionButton icon={<Plus />} onClick={onAnother}>Record another</ActionButton>
-        <Button className="h-12" onClick={onClose}>Done</Button>
+      <ReceiptCard paymentId={result.payment_id} onClose={onClose} />
+      <div className="flex flex-wrap justify-center gap-x-4 gap-y-1 text-sm">
+        <button type="button" className="font-medium text-[#2563EB] hover:underline" onClick={onAnother}><Plus className="mr-1 inline size-4" />Record another</button>
+        <button type="button" className="font-medium text-[#2563EB] hover:underline" onClick={() => { onClose(); navigate(`/payments/${result.payment_id}`) }}>
+          <Receipt className="mr-1 inline size-4" />Payment details
+        </button>
       </div>
     </div>
   )
-}
-
-function ActionButton({ children, icon, onClick, disabled }: { children: ReactNode; icon: ReactNode; onClick: () => void; disabled?: boolean }) {
-  return <Button variant="outline" className="h-12" onClick={onClick} disabled={disabled}>{icon}{children}</Button>
 }

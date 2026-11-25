@@ -4,8 +4,9 @@
 import { useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, CalendarCheck2, ClipboardList, HandCoins, Search, UserRound, Wallet } from 'lucide-react'
+import { AlertTriangle, CalendarCheck2, ClipboardList, HandCoins, Printer, Search, UserRound, Wallet } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
   DataTable, EmptyState, ErrorState, Panel, PageHeader, Pill, SearchInput, Spinner, StatCard, useDebounced, LoanStatusBadge, type Column,
 } from '@/components/common'
@@ -18,6 +19,7 @@ import { FREQUENCY_LABEL, fmtDate, peso, phMobile, todayManila, toNumber } from 
 import { cn } from '@/lib/utils'
 import type { Borrower, LoanView } from '@/types/db'
 import { buildRecordRows, RECORD_STATUS, type RecordRow } from './records'
+import { ReceiptCard } from './receipt/ReceiptCard'
 
 const EXPORT_COLUMNS: ExportColumn[] = [
   { key: 'no', label: '#', type: 'number' },
@@ -137,6 +139,7 @@ function LoanRecord({ loan, borrowerName }: { loan: LoanView; borrowerName: stri
   const navigate = useNavigate()
   const { organization } = useAuth()
   const printRef = useRef<HTMLDivElement>(null)
+  const [reprint, setReprint] = useState<RecordPayment | null>(null)
   const today = todayManila()
   // query keys sit under 'installments' / 'payments', which recording or reversing a payment refreshes
   const instQ = useQuery({ queryKey: ['installments', loan.id, 'records'], queryFn: () => recordsService.installments(loan.id) })
@@ -216,6 +219,14 @@ function LoanRecord({ loan, borrowerName }: { loan: LoanView; borrowerName: stri
       key: 'amount', header: 'Amount', align: 'right', mobile: 'value',
       cell: (p) => <span className={cn('font-semibold', p.status === 'reversed' && 'text-muted-foreground line-through')}>{peso(p.amount)}</span>,
     },
+    {
+      key: 'print', header: '', align: 'right', mobile: 'meta',
+      cell: (p) => receiptNo(p) ? (
+        <Button size="sm" variant="outline" className="bg-white" onClick={(e) => { e.stopPropagation(); setReprint(p) }}>
+          <Printer /> Reprint
+        </Button>
+      ) : null,
+    },
   ]
 
   return (
@@ -267,6 +278,17 @@ function LoanRecord({ loan, borrowerName }: { loan: LoanView; borrowerName: stri
             empty={<EmptyState icon={<Wallet />} title="No payments recorded yet" />} />
         )}
       </Panel>
+
+      {/* reprinting reads the stored receipt; no payment or receipt is created */}
+      <Dialog open={!!reprint} onOpenChange={(o) => { if (!o) setReprint(null) }}>
+        <DialogContent className="max-h-[92dvh] overflow-y-auto sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reprint receipt</DialogTitle>
+            <DialogDescription>{reprint ? `${receiptNo(reprint)} · ${reprint.payment_number} · ${peso(reprint.amount)}` : ''}</DialogDescription>
+          </DialogHeader>
+          {reprint && <ReceiptCard paymentId={reprint.id} reprint onClose={() => setReprint(null)} />}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
